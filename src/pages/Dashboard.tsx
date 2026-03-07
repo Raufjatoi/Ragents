@@ -245,7 +245,10 @@ const Dashboard = () => {
   const [selectedCuisine, setSelectedCuisine] = useState<Cuisine | null>(null);
   const [selectedCookIngredients, setSelectedCookIngredients] = useState<CookIngredient[]>([]);
   const [cookingStep, setCookingStep] = useState<"cuisine" | "ingredients" | "ready">("cuisine");
-  const [customAgents, setCustomAgents] = useState<CustomAgentConfig[]>([]);
+  const [customAgents, setCustomAgents] = useState<CustomAgentConfig[]>(() => {
+    const saved = localStorage.getItem("ragents_custom_agents");
+    return saved ? JSON.parse(saved) : [];
+  });
   const [showBuilder, setShowBuilder] = useState(false);
   const [socialPost, setSocialPost] = useState<SocialPostState | null>(null);
   const [selectedAiTool, setSelectedAiTool] = useState<AiTool | null>(null);
@@ -262,6 +265,10 @@ const Dashboard = () => {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    localStorage.setItem("ragents_custom_agents", JSON.stringify(customAgents));
+  }, [customAgents]);
 
   const detectAi = async (text: string): Promise<number> => {
     const prompt = `Analyze the following text and estimate the probability (0-100) that it was written by AI. Only respond with a single integer number, nothing else.\n\nText:\n"""${text.slice(0, 3000)}"""`;
@@ -536,6 +543,20 @@ const Dashboard = () => {
       return;
     }
 
+    // Direct Switch Logic
+    const directSwitchMatch = input.toLowerCase().match(/(?:switch|change|go to)(?: me to)? (?:the )?(\w+)(?: agent)?/);
+    if (directSwitchMatch) {
+      const target = directSwitchMatch[1].toLowerCase();
+      const found = builtInAgents.find(a => a === target || agents[a as BuiltInAgent]?.label.toLowerCase().includes(target))
+        || customAgents.find(ca => ca.id.toLowerCase() === target || ca.name.toLowerCase().includes(target))?.id;
+
+      if (found) {
+        switchAgent(found);
+        setInput("");
+        return;
+      }
+    }
+
     const userMsg: Message = { id: Date.now(), text: input, sender: "user" };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
@@ -560,6 +581,11 @@ const Dashboard = () => {
 - Use emojis sparingly and naturally.
 - No filler phrases like "Great question!" or "Absolutely!" — get straight to the point.`;
 
+    const sharedSwitchInfo = `\n\n**Switching Agents:**
+If the user asks for something outside your specialty (e.g., recipes while in Content Detector), recommend the right agent using [SWITCH:agentkey]. 
+Available keys: default (Ragent), content (AI Detector), social (Social Agent), design (Design Agent), music (Music Agent), cooking (Cooking Agent).
+Example: "I can't do recipes, but you can switch to our Cooking Agent! [SWITCH:cooking]"`;
+
     let systemPrompt = `You are Ragent, the main assistant of the Ragents platform — built by Abdul Rauf Jatoi.
 
 Ragents is an AI agent platform where each agent specializes in a different task. Users can also create custom agents.
@@ -571,19 +597,19 @@ ${allAgentInfo}
 - Help users with general questions concisely
 - If a user needs a specific task, recommend the right agent and include [SWITCH:agentkey] in your response (agentkey: content, social, design, music, cooking, or custom agent ID)
 - Only suggest switching when the user clearly wants a task another agent handles. For casual chat, just respond normally.
-- You can answer general questions yourself without switching${formatRules}`;
+- You can answer general questions yourself without switching${formatRules}${sharedSwitchInfo}`;
     if (activeAgent === "content") {
-      systemPrompt = `You are the AI Content Detector agent. You help users detect whether text is AI-generated. When a user pastes text (100+ chars), the system automatically runs 4 analysis tools and shows results. You can also answer questions about AI detection, content quality, and writing tips. If the user pastes short text, tell them to paste at least 100 characters for accurate detection.${formatRules}`;
+      systemPrompt = `You are the AI Content Detector agent. You help users detect whether text is AI-generated. When a user pastes text (100+ chars), the system automatically runs 4 analysis tools and shows results. You can also answer questions about AI detection, content quality, and writing tips. If the user pastes short text, tell them to paste at least 100 characters for accurate detection.${formatRules}${sharedSwitchInfo}`;
     } else if (activeAgent === "social") {
       const platLabel = selectedPlatform ? platforms[selectedPlatform].label : "social media";
-      systemPrompt = `You are a Social Media Agent. Create engaging posts optimized for ${platLabel} with appropriate hashtags, tone, and formatting. If no platform selected, ask them to pick one.${formatRules}`;
+      systemPrompt = `You are a Social Media Agent. Create engaging posts optimized for ${platLabel} with appropriate hashtags, tone, and formatting. If no platform selected, ask them to pick one.${formatRules}${sharedSwitchInfo}`;
     } else if (activeAgent === "design") {
       const toolLabel = selectedAiTool ? aiTools[selectedAiTool].label : "AI image generators";
-      systemPrompt = `You are a Design Agent optimized for ${toolLabel}. When the user describes an image, the system automatically runs 5 analysis tools (style, color, lighting, composition, final prompt). You can also answer questions about prompt engineering and ${toolLabel} tips. If no AI tool is selected, ask them to pick one first.${formatRules}`;
+      systemPrompt = `You are a Design Agent optimized for ${toolLabel}. When the user describes an image, the system automatically runs 5 analysis tools (style, color, lighting, composition, final prompt). You can also answer questions about prompt engineering and ${toolLabel} tips. If no AI tool is selected, ask them to pick one first.${formatRules}${sharedSwitchInfo}`;
     } else if (activeAgent === "music") {
       const genreLabel = selectedGenre ? genres[selectedGenre].label : "any genre";
       const instLabels = selectedInstruments.map((i) => instruments[i].label).join(", ") || "any instruments";
-      systemPrompt = `You are a Music Agent specialized in generating song lyrics and music generation prompts for tools like Suno AI, Udio, etc.
+      systemPrompt = `You are a Music Agent specialized in generating song lyrics and music generation prompts for tools like Suno AI, Udio, etc.${sharedSwitchInfo}
 
 The user selected:
 - Genre: ${genreLabel}
@@ -598,11 +624,11 @@ Format it cleanly with headers. Be creative and musical.${formatRules}`;
     } else if (activeAgent === "cooking") {
       const cuisineLabel = selectedCuisine ? cuisines[selectedCuisine].label : "any cuisine";
       const ingLabels = selectedCookIngredients.map((i) => cookIngredients[i].label).join(", ") || "any ingredients";
-      systemPrompt = `You are a Cooking Agent specialized in suggesting dishes and recipes.
+      systemPrompt = `You are a Cooking Agent specialized in suggesting dishes and recipes.${sharedSwitchInfo}
 
 The user selected:
 - Cuisine: ${cuisineLabel}
-- Ingredients: ${ingLabels}
+- Instruments: ${ingLabels}
 
 Based on the user's request, suggest 2-3 dishes that match their cuisine and ingredients. For each dish provide:
 1. **Dish Name** with an emoji
@@ -625,11 +651,11 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
       ], apiSettings);
 
 
-      // Check if Ragent wants to switch to another agent
+      // Check if agent wants to switch to another agent
       const switchMatch = reply.match(/\[SWITCH:(\w+)\]/);
       const cleanedReply = normalizeReply(reply);
 
-      if (switchMatch && activeAgent === "default") {
+      if (switchMatch) {
         const targetKey = switchMatch[1];
         const cleanReply = normalizeReply(cleanedReply.replace(/\[SWITCH:\w+\]/g, "").trim());
         setMessages((prev) => [...prev, { id: Date.now() + 1, text: cleanReply || "Would you like me to switch you to that agent?", sender: "bot", switchSuggestion: targetKey }]);
