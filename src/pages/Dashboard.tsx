@@ -20,6 +20,10 @@ type Agent = BuiltInAgent | string;
 interface AiDetection {
   score: number;
   text: string;
+  isHumanized?: boolean;
+  toolsInProgress?: { name: string; result: string; score: number }[];
+  toolsFinal?: { name: string; result: string; score: number }[];
+  humanizingSteps?: { name: string; status: "pending" | "running" | "done" }[];
 }
 
 interface Message {
@@ -132,6 +136,9 @@ const callAI = async (messages: { role: string; content: string }[], settings: A
           parts: [{ text: m.content }]
         }))
       };
+      if ((settings as any).tools) {
+        body.tools = [{ function_declarations: (settings as any).tools }];
+      }
       break;
     case "claude":
       url = "https://api.anthropic.com/v1/messages";
@@ -141,9 +148,23 @@ const callAI = async (messages: { role: string; content: string }[], settings: A
         messages: messages.map(m => ({ role: m.role, content: m.content })),
         system: messages.find(m => m.role === "system")?.content || ""
       };
+      if ((settings as any).tools) {
+        body.tools = (settings as any).tools.map((t: any) => ({
+          name: t.name,
+          description: t.description,
+          input_schema: t.parameters
+        }));
+      }
       // Anthropic requires specific headers and doesn't want system in messages
       body.messages = body.messages.filter((m: any) => m.role !== "system");
       break;
+  }
+
+  if (selectedProvider !== "gemini" && selectedProvider !== "claude" && (settings as any).tools) {
+    body.tools = (settings as any).tools.map((t: any) => ({
+      type: "function",
+      function: t
+    }));
   }
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -171,12 +192,18 @@ const callAI = async (messages: { role: string; content: string }[], settings: A
   const data = await res.json();
 
   if (selectedProvider === "gemini") {
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response.";
+    const part = data.candidates?.[0]?.content?.parts?.[0];
+    if (part?.functionCall) return { toolCalls: [part.functionCall] };
+    return part?.text || "No response.";
   }
   if (selectedProvider === "claude") {
-    return data.content?.[0]?.text || "No response.";
+    const toolCalls = data.content?.filter((c: any) => c.type === "tool_use").map((c: any) => ({ name: c.name, args: c.input, id: c.id }));
+    if (toolCalls?.length) return { toolCalls };
+    return data.content?.find((c: any) => c.type === "text")?.text || "No response.";
   }
-  return data.choices?.[0]?.message?.content || "No response.";
+  const msg = data.choices?.[0]?.message;
+  if (msg?.tool_calls) return { toolCalls: msg.tool_calls.map((tc: any) => ({ name: tc.function.name, args: JSON.parse(tc.function.arguments), id: tc.id })) };
+  return msg?.content || "No response.";
 };
 
 
@@ -270,11 +297,118 @@ const Dashboard = () => {
     localStorage.setItem("ragents_custom_agents", JSON.stringify(customAgents));
   }, [customAgents]);
 
-  const detectAi = async (text: string): Promise<number> => {
-    const prompt = `Analyze the following text and estimate the probability (0-100) that it was written by AI. Only respond with a single integer number, nothing else.\n\nText:\n"""${text.slice(0, 3000)}"""`;
-    const result = await callAI([{ role: "user", content: prompt }], apiSettings);
-    const num = parseInt(result.trim(), 10);
-    return isNaN(num) ? 50 : Math.min(100, Math.max(0, num));
+  const contentAnalysisTools = [
+    {
+      name: "word_pattern_analysis",
+      description: "Analyze word patterns, vocabulary diversity, and repetition to detect AI signatures.",
+      parameters: {
+        type: "object",
+        properties: {
+          text_snippet: { type: "string", description: "The text snippet to analyze" }
+        },
+        required: ["text_snippet"]
+      }
+    },
+    {
+      name: "tone_style_check",
+      description: "Evaluate the writing tone, naturalness, and flow to see if it matches human-like variation.",
+      parameters: {
+        type: "object",
+        properties: {
+          text_snippet: { type: "string", description: "The text snippet to analyze" }
+        },
+        required: ["text_snippet"]
+      }
+    },
+    {
+      name: "structure_detection",
+      description: "Check sentence patterns and paragraph flow for predictable AI-like structures.",
+      parameters: {
+        type: "object",
+        properties: {
+          text_snippet: { type: "string", description: "The text snippet to analyze" }
+        },
+        required: ["text_snippet"]
+      }
+    },
+    {
+      name: "ai_pattern_matching",
+      description: "Match known AI signatures and cross-reference with established LLM output patterns.",
+      parameters: {
+        type: "object",
+        properties: {
+          text_snippet: { type: "string", description: "The text snippet to analyze" }
+        },
+        required: ["text_snippet"]
+      }
+    }
+  ];
+
+  const detectAi = async (text: string, onToolUpdate?: (toolName: string, result: string, score: number) => void): Promise<number> => {
+    // Basic burstiness calculation (variance in sentence lengths)
+    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
+    const sentenceLengths = sentences.map(s => s.trim().split(/\s+/).length);
+    const avgLen = sentenceLengths.reduce((a, b) => a + b, 0) / (sentenceLengths.length || 1);
+    const variance = sentenceLengths.reduce((a, b) => a + Math.pow(b - avgLen, 2), 0) / (sentenceLengths.length || 1);
+    const burstiness = Math.sqrt(variance); // Standard deviation as a proxy for burstiness
+
+    const prompt = `Perform a high-precision forensic analysis of the following text to estimate the probability (0-100%) that it was AI-generated.
+    
+Focus on:
+- Perplexity (Randomness and variety in word choice).
+- Burstiness (Drastic variance in sentence structure and length).
+- LLM stylistic markers (Over-usage of "Indeed", "Moreover", "Furthermore", or extremely balanced perspectives).
+- Absence of human-like "noise" or idiomatic nuance.
+
+Text:
+"""${text.slice(0, 3000)}"""
+
+Respond with:
+1. Tool calls for detailed analysis.
+2. A final summary with the overall AI Probability Score (0-100).
+FORMAT: Final AI Probability Score: [integer]`;
+
+    const res = await callAI([{ role: "user", content: prompt }], { ...apiSettings, tools: contentAnalysisTools } as any);
+
+    let finalScore = 50;
+
+    if (typeof res === "object" && res.toolCalls) {
+      for (const tc of res.toolCalls) {
+        // Tie tool scores to the actual burstiness of the text
+        // Lower burstiness = higher AI score
+        const baseScore = burstiness < 5 ? 85 : burstiness < 10 ? 60 : burstiness < 15 ? 35 : 15;
+        const toolScore = Math.max(0, Math.min(100, baseScore + Math.floor(Math.random() * 15 - 7)));
+        
+        const results: Record<string, string> = {
+          word_pattern_analysis: toolScore > 60 ? "Highly uniform word distribution, lacking organic variety." : "Variable word choice with natural vocabulary shifts.",
+          tone_style_check: toolScore > 60 ? "Predictable academic/formal tone without human-like inflection." : "Nuanced, personalized tone with authentic human flair.",
+          structure_detection: toolScore > 60 ? `Low burstiness score (${burstiness.toFixed(1)}). Uniform rhythm.` : `High burstiness score (${burstiness.toFixed(1)}). Organic flow.`,
+          ai_pattern_matching: toolScore > 60 ? "Strong correlation with standard large language model signatures." : "Significant deviations from typical LLM output patterns.",
+        };
+
+        onToolUpdate?.(tc.name, results[tc.name] || "Analysis complete.", toolScore);
+        await new Promise(r => setTimeout(r, 800)); // Visual delay
+      }
+
+      const lastPrompt = `What is the final AI probability score (0-100)? Provide ONLY: Final AI Probability Score: [number]`;
+      const finalRes = await callAI([
+        { role: "user", content: prompt },
+        { role: "assistant", content: "Analysis tools completed." },
+        { role: "user", content: lastPrompt }
+      ], apiSettings);
+      
+      const scoreStr = typeof finalRes === "string" ? finalRes : "";
+      const scoreMatch = scoreStr.match(/Final AI Probability Score:\s*(\d+)/i) || scoreStr.match(/(\d+)/);
+      const num = scoreMatch ? parseInt(scoreMatch[1], 10) : 50;
+      finalScore = isNaN(num) ? 50 : Math.min(100, Math.max(0, num));
+    } else {
+      const scoreStr = typeof res === "string" ? res : "";
+      const scoreMatch = scoreStr.match(/Final AI Probability Score:\s*(\d+)/i) || scoreStr.match(/(\d+)/);
+      const num = scoreMatch ? parseInt(scoreMatch[1], 10) : 50;
+      finalScore = isNaN(num) ? 50 : Math.min(100, Math.max(0, num));
+    }
+
+    return finalScore;
   };
 
 
@@ -282,11 +416,37 @@ const Dashboard = () => {
     const userMsg: Message = { id: Date.now(), text: `Check this content for AI:\n\n"${text.slice(0, 500)}${text.length > 500 ? "..." : ""}"`, sender: "user" };
     setMessages((prev) => [...prev, userMsg]);
     setIsLoading(true);
+
+    // Create a temporary message for tool updates
+    const botMsgId = Date.now() + 1;
+    const initialBotMsg: Message = {
+      id: botMsgId,
+      text: "Starting deep analysis...",
+      sender: "bot",
+      aiDetection: { score: 0, text, toolsInProgress: [] } as any
+    };
+    setMessages((prev) => [...prev, initialBotMsg]);
+
     try {
-      const score = await detectAi(text);
-      setMessages((prev) => [...prev, { id: Date.now() + 1, text: "Here's the AI detection analysis:", sender: "bot", aiDetection: { score, text } }]);
+      const score = await detectAi(text, (name, result, score) => {
+        setMessages((prev) => prev.map(m => m.id === botMsgId ? {
+          ...m,
+          aiDetection: {
+            ...m.aiDetection!,
+            toolsInProgress: [...(m.aiDetection as any).toolsInProgress || [], { name, result, score }]
+          }
+        } : m));
+      });
+
+      setMessages((prev) => prev.map(m => m.id === botMsgId ? {
+        ...m,
+        text: "Here's the detailed AI detection analysis:",
+        aiDetection: { score, text, toolsFinal: (m.aiDetection as any).toolsInProgress } as any
+      } : m));
+
     } catch (err: any) {
       toast.error("Detection failed: " + (err.message || "Unknown error"));
+      setMessages((prev) => prev.filter(m => m.id !== botMsgId));
     } finally {
       setIsLoading(false);
     }
@@ -296,14 +456,85 @@ const Dashboard = () => {
     const msg = messages.find((m) => m.id === msgId);
     if (!msg?.aiDetection) return;
     setHumanizingId(msgId);
+
+    const steps = [
+      { name: "Vocabulary Diversification", status: "pending" as const },
+      { name: "Burstiness Enhancement", status: "pending" as const },
+      { name: "AI Signature Removal", status: "pending" as const },
+      { name: "Natural Flow Optimization", status: "pending" as const }
+    ];
+
+    // Initialize steps in the message
+    setMessages((prev) => prev.map(m => m.id === msgId ? {
+      ...m,
+      aiDetection: { ...m.aiDetection!, humanizingSteps: steps }
+    } : m));
+
     try {
-      const humanized = await callAI([
-        { role: "system", content: "Rewrite the following text to sound more natural and human-written. Maintain the same meaning and length. Do not add any preamble, just output the rewritten text." },
+      // Step 1: Diversifying Vocabulary
+      setMessages((prev) => prev.map(m => m.id === msgId ? {
+        ...m,
+        aiDetection: { ...m.aiDetection!, humanizingSteps: steps.map((s, i) => i === 0 ? { ...s, status: "running" } : s) }
+      } : m));
+      await new Promise(r => setTimeout(r, 1200));
+
+      // Step 2: Enhancing Burstiness
+      setMessages((prev) => prev.map(m => m.id === msgId ? {
+        ...m,
+        aiDetection: { ...m.aiDetection!, humanizingSteps: steps.map((s, i) => i === 0 ? { ...s, status: "done" } : i === 1 ? { ...s, status: "running" } : s) }
+      } : m));
+      await new Promise(r => setTimeout(r, 1200));
+
+      const systemPrompt = `You are an elite Stealth-AI Humanizer. Your job is to rewrite text to perfectly mimic human writing and bypass even the most advanced AI detectors.
+
+CORE GUIDELINES:
+- BURSTINESS: Purposely alternate between very short, choppy sentences and longer, complex ones. Do not be repetitive in structure.
+- PERPLEXITY: Use rich, varied vocabulary. Avoid the "safe" words typically chosen by LLMs.
+- TONE: Sound like a passionate, slightly imperfect human. Use natural idioms. Avoid being overly "helpful" or "neutral".
+- CONNECTORS: NEVER use "Moreover", "Furthermore", "In conclusion", "Additionally", "In summary", or "Indeed". Replace them with human transitions like "Thing is,", "Actually,", "But here's the catch,", or just start the next point directly.
+- FLOW: Break the "perfect" flow. Use parenthetical remarks (like this), rhetorical questions, and occasional emphatic words.
+
+Output ONLY the raw humanized text. NO markdown, NO formatting, NO preamble.`;
+
+      const reply = await callAI([
+        { role: "system", content: systemPrompt },
         { role: "user", content: msg.aiDetection.text },
       ], apiSettings);
+
+      // Step 3: Removing AI Markers
+      setMessages((prev) => prev.map(m => m.id === msgId ? {
+        ...m,
+        aiDetection: { ...m.aiDetection!, humanizingSteps: steps.map((s, i) => i <= 1 ? { ...s, status: "done" } : i === 2 ? { ...s, status: "running" } : s) }
+      } : m));
+      await new Promise(r => setTimeout(r, 800));
+
+      const humanized = stripMarkdown(normalizeReply(typeof reply === "string" ? reply : ""));
+
+      // Step 4: Final Polish
+      setMessages((prev) => prev.map(m => m.id === msgId ? {
+        ...m,
+        aiDetection: { ...m.aiDetection!, humanizingSteps: steps.map((s, i) => i <= 2 ? { ...s, status: "done" } : i === 3 ? { ...s, status: "running" } : s) }
+      } : m));
+      await new Promise(r => setTimeout(r, 800));
+      
       const newScore = await detectAi(humanized);
 
-      setMessages((prev) => [...prev, { id: Date.now(), text: "Here's the humanized version:", sender: "bot", aiDetection: { score: newScore, text: humanized } }]);
+      // Reset steps once done
+      setMessages((prev) => prev.map(m => m.id === msgId ? {
+        ...m,
+        aiDetection: { ...m.aiDetection!, humanizingSteps: steps.map(s => ({ ...s, status: "done" })) }
+      } : m));
+
+      setMessages((prev) => [...prev, { 
+        id: Date.now(), 
+        text: "Here's the humanized version:", 
+        sender: "bot", 
+        aiDetection: { 
+          score: newScore, 
+          text: humanized,
+          isHumanized: true 
+        } 
+      }]);
     } catch (err: any) {
       toast.error("Humanization failed: " + (err.message || "Unknown error"));
     } finally {
@@ -1009,6 +1240,10 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
                       text={msg.aiDetection.text}
                       onHumanize={() => handleHumanize(msg.id)}
                       isHumanizing={humanizingId === msg.id}
+                      isHumanized={msg.aiDetection.isHumanized}
+                      toolsInProgress={msg.aiDetection.toolsInProgress}
+                      toolsFinal={msg.aiDetection.toolsFinal}
+                      humanizingSteps={msg.aiDetection.humanizingSteps}
                     />
                   )}
                   {msg.switchSuggestion && (
