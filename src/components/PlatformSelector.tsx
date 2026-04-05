@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { motion } from "framer-motion";
 import { Check } from "lucide-react";
 
@@ -17,6 +16,22 @@ export const platforms: Record<Platform, PlatformInfo> = {
   twitter: { label: "X / Twitter", icon: "𝕏", color: "#ffffff" },
   facebook: { label: "Facebook", icon: "📘", color: "#1877F2" },
   tiktok: { label: "TikTok", icon: "🎵", color: "#00f2ea" },
+};
+
+export interface PlatformGuide {
+  charLimit: string;
+  hashtagTip: string;
+  audienceTone: string;
+  tip: string;
+}
+
+export const platformGuides: Record<Platform, PlatformGuide> = {
+  instagram: { charLimit: "2,200 chars", hashtagTip: "5–10 targeted tags", audienceTone: "Visual & emotional", tip: "Hook in first line — only 2 lines show before 'more'" },
+  youtube:   { charLimit: "5,000 char desc", hashtagTip: "3–5 SEO tags", audienceTone: "Informative & engaging", tip: "First 150 chars appear in search results" },
+  linkedin:  { charLimit: "3,000 chars", hashtagTip: "3–5 professional tags", audienceTone: "Professional & insightful", tip: "Personal stories get 3× more engagement than company news" },
+  twitter:   { charLimit: "280 chars / tweet", hashtagTip: "1–2 trending tags", audienceTone: "Punchy & conversational", tip: "Tweets with questions get 23% more replies" },
+  facebook:  { charLimit: "63,206 chars", hashtagTip: "1–2 broad tags", audienceTone: "Community & conversational", tip: "Posts with questions drive 2× more comments" },
+  tiktok:    { charLimit: "2,200 char caption", hashtagTip: "3–5 trending tags", audienceTone: "Casual & trendy", tip: "First 3 words determine if viewer stays or scrolls" },
 };
 
 interface PlatformSelectorProps {

@@ -1,7 +1,7 @@
 import { ShieldAlert, ShieldCheck, ShieldQuestion, RefreshCw, Download, FileText, FileDown, Search, Brain, Type, BarChart3, Sparkles, CheckCircle2, Loader2, FileType } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { jsPDF } from "jspdf";
-import { Document, Packer, Paragraph, TextRun } from "docx";
+import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, HeadingLevel, WidthType, ShadingType } from "docx";
 import { saveAs } from "file-saver";
 import { useState, useEffect } from "react";
 
@@ -26,10 +26,10 @@ interface AiDetectionResultProps {
 }
 
 const toolConfigs = [
-  { name: "words", icon: Type, label: "Word Pattern Analysis", descriptions: ["Checking repetitive phrases...", "Scanning vocabulary diversity..."] },
-  { name: "tone", icon: Brain, label: "Tone & Style Check", descriptions: ["Analyzing writing tone...", "Evaluating naturalness..."] },
-  { name: "structure", icon: BarChart3, label: "Structure Detection", descriptions: ["Checking sentence patterns...", "Analyzing paragraph flow..."] },
-  { name: "patterns", icon: Search, label: "AI Pattern Matching", descriptions: ["Matching known AI patterns...", "Cross-referencing signatures..."] },
+  { name: "word_pattern_analysis", icon: Type, label: "Word Pattern Analysis", descriptions: ["Checking vocabulary diversity...", "Scanning repetitive phrases..."] },
+  { name: "tone_style_check", icon: Brain, label: "Tone & Style Check", descriptions: ["Analyzing writing tone...", "Evaluating sentence burstiness..."] },
+  { name: "structure_detection", icon: BarChart3, label: "Structure Detection", descriptions: ["Checking paragraph uniformity...", "Analyzing sentence openings..."] },
+  { name: "ai_pattern_matching", icon: Search, label: "AI Pattern Matching", descriptions: ["Scanning known AI phrases...", "Cross-referencing LLM signatures..."] },
 ];
 
 const AiDetectionResult = ({ score, text, onHumanize, isHumanizing, isHumanized, toolsInProgress, toolsFinal, humanizingSteps }: AiDetectionResultProps) => {
@@ -43,7 +43,7 @@ const AiDetectionResult = ({ score, text, onHumanize, isHumanizing, isHumanized,
     if (toolsFinal || toolsInProgress) {
       const activeTools = toolsFinal || toolsInProgress || [];
       const updatedTools = toolConfigs.map((cfg) => {
-        const matchingTool = activeTools.find(at => at.name.includes(cfg.name.split("_")[0]) || cfg.name.includes(at.name.split("_")[0]));
+        const matchingTool = activeTools.find(at => at.name === cfg.name);
         if (matchingTool) {
           return {
             ...cfg,
@@ -77,10 +77,10 @@ const AiDetectionResult = ({ score, text, onHumanize, isHumanizing, isHumanized,
 
         const toolScore = Math.max(0, Math.min(100, score + Math.floor(Math.random() * 20 - 10)));
         const results: Record<string, string> = {
-          words: toolScore > 60 ? "Repetitive patterns detected" : "Natural word variety",
-          tone: toolScore > 60 ? "Uniform formal tone" : "Varied, human-like tone",
-          structure: toolScore > 60 ? "Predictable sentence structure" : "Organic structure",
-          patterns: toolScore > 60 ? "AI signatures found" : "No strong AI markers",
+          word_pattern_analysis: toolScore > 60 ? "Repetitive patterns detected" : "Natural word variety",
+          tone_style_check: toolScore > 60 ? "Uniform formal tone" : "Varied, human-like tone",
+          structure_detection: toolScore > 60 ? "Predictable sentence structure" : "Organic structure",
+          ai_pattern_matching: toolScore > 60 ? "AI signatures found" : "No strong AI markers",
         };
 
         setTools((prev) =>
@@ -114,72 +114,232 @@ const AiDetectionResult = ({ score, text, onHumanize, isHumanizing, isHumanized,
     URL.revokeObjectURL(url);
   };
 
+  const getToolData = () => {
+    const names = ["word_pattern_analysis", "tone_style_check", "structure_detection", "ai_pattern_matching"];
+    const labels = ["Word Pattern Analysis", "Tone & Style Check", "Structure Detection", "AI Pattern Matching"];
+    const src = toolsFinal ?? [];
+    return names.map((name, i) => {
+      const found = src.find(t => t.name === name);
+      return { label: labels[i], score: found?.score ?? score, finding: found?.result ?? "—" };
+    });
+  };
+
   const downloadAsPdf = () => {
-    const doc = new jsPDF();
-    const margin = 20;
+    const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
     const pageWidth = doc.internal.pageSize.getWidth();
-    const maxWidth = pageWidth - margin * 2;
-    
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 18;
+    const contentWidth = pageWidth - margin * 2;
+    const verdict = score >= 70 ? "LIKELY AI-GENERATED" : score >= 40 ? "UNCERTAIN / MIXED" : "LIKELY HUMAN-WRITTEN";
+    const scoreRgb: [number, number, number] = score >= 70 ? [239, 68, 68] : score >= 40 ? [245, 158, 11] : [34, 197, 94];
+    const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+    let y = 0;
+
+    // Header banner
+    doc.setFillColor(26, 10, 46);
+    doc.rect(0, 0, pageWidth, 46, "F");
     doc.setFont("helvetica", "bold");
     doc.setFontSize(18);
-    doc.text("Humanized Content", margin, 25);
-    
+    doc.setTextColor(255, 255, 255);
+    doc.text("AI Detection Report", margin, 20);
     doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(180, 150, 220);
+    doc.text(`Generated by Ragents  •  ${dateStr}`, margin, 30);
+
+    // Verdict pill
+    doc.setFillColor(...scoreRgb);
+    doc.roundedRect(pageWidth - margin - 54, 12, 54, 11, 2, 2, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(6.5);
+    doc.setTextColor(255, 255, 255);
+    doc.text(verdict, pageWidth - margin - 27, 19.5, { align: "center" });
+
+    y = 58;
+
+    // Score section
+    doc.setFont("helvetica", "bold");
     doc.setFontSize(10);
-    doc.setTextColor(100);
-    doc.text(`AI Probability Score: ${score}%`, margin, 35);
-    
-    doc.setDrawColor(200);
-    doc.line(margin, 40, pageWidth - margin, 40);
-    
-    doc.setFontSize(11);
-    doc.setTextColor(0);
-    
-    // Auto-wrap text
-    const lines = doc.splitTextToSize(text, maxWidth);
-    doc.text(lines, margin, 50);
-    
-    doc.save("humanized_content.pdf");
+    doc.setTextColor(40, 40, 40);
+    doc.text("AI Probability Score", margin, y);
+    y += 5;
+
+    // Bar background
+    doc.setFillColor(225, 220, 240);
+    doc.roundedRect(margin, y, contentWidth, 7, 1.5, 1.5, "F");
+    // Bar fill
+    const barFill = (score / 100) * contentWidth;
+    doc.setFillColor(...scoreRgb);
+    doc.roundedRect(margin, y, barFill, 7, 1.5, 1.5, "F");
+    // Score label
+    if (barFill > 16) {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(7);
+      doc.setTextColor(255, 255, 255);
+      doc.text(`${score}%`, margin + barFill - 1.5, y + 5, { align: "right" });
+    }
+    y += 13;
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.setTextColor(...scoreRgb);
+    doc.text(`${score}% — ${verdict}`, margin, y);
+    y += 10;
+
+    // Divider
+    doc.setDrawColor(210, 200, 230);
+    doc.line(margin, y, pageWidth - margin, y);
+    y += 7;
+
+    // Tool results table
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setTextColor(40, 40, 40);
+    doc.text("Analysis Tool Results", margin, y);
+    y += 5;
+
+    // Table header
+    const colScore = margin + 82;
+    const colFinding = margin + 104;
+    doc.setFillColor(45, 20, 80);
+    doc.rect(margin, y, contentWidth, 7, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(7.5);
+    doc.setTextColor(255, 255, 255);
+    doc.text("Tool", margin + 2, y + 5);
+    doc.text("Score", colScore + 2, y + 5);
+    doc.text("Finding", colFinding + 2, y + 5);
+    y += 7;
+
+    const toolData = getToolData();
+    toolData.forEach((row, i) => {
+      const rowBg: [number, number, number] = i % 2 === 0 ? [248, 244, 255] : [255, 255, 255];
+      doc.setFillColor(...rowBg);
+      doc.rect(margin, y, contentWidth, 9, "F");
+
+      const rowColor: [number, number, number] = row.score >= 70 ? [200, 40, 40] : row.score >= 40 ? [160, 100, 0] : [20, 140, 50];
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      doc.setTextColor(40, 40, 40);
+      doc.text(row.label, margin + 2, y + 6);
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(...rowColor);
+      doc.text(`${row.score}%`, colScore + 2, y + 6);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(60, 60, 60);
+      const short = row.finding.length > 54 ? row.finding.slice(0, 51) + "..." : row.finding;
+      doc.text(short, colFinding + 2, y + 6);
+      y += 9;
+    });
+
+    y += 7;
+    doc.setDrawColor(210, 200, 230);
+    doc.line(margin, y, pageWidth - margin, y);
+    y += 7;
+
+    // Text section
+    const textLabel = isHumanized ? "Humanized Text" : "Analyzed Text";
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setTextColor(40, 40, 40);
+    doc.text(textLabel, margin, y);
+    y += 6;
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(55, 55, 55);
+    const textLines = doc.splitTextToSize(text, contentWidth);
+    textLines.forEach((line: string) => {
+      if (y > pageHeight - 18) { doc.addPage(); y = 20; }
+      doc.text(line, margin, y);
+      y += 5;
+    });
+
+    doc.save("ai-detection-report.pdf");
   };
 
   const downloadAsDocx = () => {
-    const doc = new Document({
-      sections: [
-        {
-          properties: {},
-          children: [
-            new Paragraph({
-              children: [
-                new TextRun({
-                  text: "Humanized Content",
-                  bold: true,
-                  size: 36,
-                }),
-              ],
-            }),
-            new Paragraph({
-              children: [
-                new TextRun({
-                  text: `AI Probability Score: ${score}%`,
-                  color: score >= 70 ? "FF4444" : score >= 40 ? "F59E0B" : "22C55E",
-                  bold: true,
-                  size: 24,
-                }),
-              ],
-            }),
-            new Paragraph({ text: "" }), // Spacing
-            ...text.split("\n").map(para => new Paragraph({
-              children: [new TextRun({ text: para.trim(), size: 22 })],
-              spacing: { after: 200 }
-            }))
-          ],
-        },
-      ],
+    const verdict = score >= 70 ? "LIKELY AI-GENERATED" : score >= 40 ? "UNCERTAIN / MIXED" : "LIKELY HUMAN-WRITTEN";
+    const scoreHex = score >= 70 ? "EF4444" : score >= 40 ? "F59E0B" : "22C55E";
+    const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+    const toolData = getToolData();
+    const makeHex = (s: number) => s >= 70 ? "EF4444" : s >= 40 ? "F59E0B" : "22C55E";
+
+    const headerRow = new TableRow({
+      children: ["Tool", "Score", "Finding"].map(label =>
+        new TableCell({
+          shading: { fill: "2D1450", type: ShadingType.CLEAR, color: "2D1450" },
+          children: [new Paragraph({ children: [new TextRun({ text: label, bold: true, color: "FFFFFF", size: 18 })] })],
+        })
+      ),
     });
 
-    Packer.toBlob(doc).then((blob) => {
-      saveAs(blob, "humanized_content.docx");
+    const dataRows = toolData.map((row, i) => {
+      const bg = i % 2 === 0 ? "F5F0FF" : "FFFFFF";
+      const makeCell = (content: string, bold = false, color = "333333") =>
+        new TableCell({
+          shading: { fill: bg, type: ShadingType.CLEAR, color: bg },
+          children: [new Paragraph({ children: [new TextRun({ text: content, bold, color, size: 18 })] })],
+        });
+      return new TableRow({
+        children: [
+          makeCell(row.label),
+          makeCell(`${row.score}%`, true, makeHex(row.score)),
+          makeCell(row.finding),
+        ],
+      });
     });
+
+    const textLabel = isHumanized ? "Humanized Text" : "Analyzed Text";
+
+    const docFile = new Document({
+      sections: [{
+        properties: {},
+        children: [
+          new Paragraph({
+            heading: HeadingLevel.HEADING_1,
+            children: [new TextRun({ text: "AI Detection Report — Ragents", bold: true, size: 40, color: "2D1450" })],
+          }),
+          new Paragraph({
+            children: [new TextRun({ text: `Generated: ${dateStr}`, size: 18, color: "888888" })],
+            spacing: { after: 120 },
+          }),
+          new Paragraph({
+            children: [
+              new TextRun({ text: "AI Probability: ", bold: true, size: 26 }),
+              new TextRun({ text: `${score}%`, bold: true, size: 26, color: scoreHex }),
+              new TextRun({ text: "   —   ", size: 26, color: "AAAAAA" }),
+              new TextRun({ text: verdict, bold: true, size: 26, color: scoreHex }),
+            ],
+            spacing: { after: 300 },
+          }),
+          new Paragraph({
+            heading: HeadingLevel.HEADING_2,
+            children: [new TextRun({ text: "Analysis Tool Results", bold: true, size: 28, color: "2D1450" })],
+            spacing: { before: 100, after: 100 },
+          }),
+          new Table({
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            columnWidths: [2400, 900, 4800],
+            rows: [headerRow, ...dataRows],
+          }),
+          new Paragraph({ text: "", spacing: { after: 300 } }),
+          new Paragraph({
+            heading: HeadingLevel.HEADING_2,
+            children: [new TextRun({ text: textLabel, bold: true, size: 28, color: "2D1450" })],
+            spacing: { before: 200, after: 100 },
+          }),
+          ...text.split("\n").map(para =>
+            new Paragraph({
+              children: [new TextRun({ text: para.trim(), size: 22 })],
+              spacing: { after: 160 },
+            })
+          ),
+        ],
+      }],
+    });
+
+    Packer.toBlob(docFile).then(blob => saveAs(blob, "ai-detection-report.docx"));
   };
 
   return (
@@ -322,20 +482,50 @@ const AiDetectionResult = ({ score, text, onHumanize, isHumanizing, isHumanized,
               )}
 
               {!isHumanized ? (
-                <button
-                  onClick={onHumanize}
-                  disabled={isHumanizing}
-                  className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-50 w-full"
-                  style={{ 
-                    backgroundColor: "rgba(168,85,247,0.15)", 
-                    color: "#c084fc", 
-                    border: "1px solid rgba(168,85,247,0.25)",
-                    boxShadow: isHumanizing ? "none" : "0 4px 12px rgba(168,85,247,0.1)"
-                  }}
-                >
-                  {isHumanizing ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                  {isHumanizing ? "Transforming Content..." : "✨ Make It Less AI"}
-                </button>
+                <div className="space-y-2">
+                  <button
+                    onClick={onHumanize}
+                    disabled={isHumanizing}
+                    className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-50 w-full"
+                    style={{
+                      backgroundColor: "rgba(168,85,247,0.15)",
+                      color: "#c084fc",
+                      border: "1px solid rgba(168,85,247,0.25)",
+                      boxShadow: isHumanizing ? "none" : "0 4px 12px rgba(168,85,247,0.1)"
+                    }}
+                  >
+                    {isHumanizing ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                    {isHumanizing ? "Transforming Content..." : "✨ Make It Less AI"}
+                  </button>
+                  {analysisComplete && (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={downloadAsTxt}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-all hover:scale-105"
+                        style={{ backgroundColor: "rgba(255,255,255,0.06)", color: "rgba(245,242,241,0.55)", border: "1px solid rgba(255,255,255,0.1)" }}
+                      >
+                        <FileText size={12} />
+                        TXT
+                      </button>
+                      <button
+                        onClick={downloadAsPdf}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-all hover:scale-105"
+                        style={{ backgroundColor: "rgba(255,255,255,0.06)", color: "rgba(245,242,241,0.55)", border: "1px solid rgba(255,255,255,0.1)" }}
+                      >
+                        <FileDown size={12} />
+                        PDF Report
+                      </button>
+                      <button
+                        onClick={downloadAsDocx}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-all hover:scale-105"
+                        style={{ backgroundColor: "rgba(255,255,255,0.06)", color: "rgba(245,242,241,0.55)", border: "1px solid rgba(255,255,255,0.1)" }}
+                      >
+                        <FileType size={12} />
+                        Word Report
+                      </button>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -352,7 +542,7 @@ const AiDetectionResult = ({ score, text, onHumanize, isHumanizing, isHumanized,
                     style={{ backgroundColor: "rgba(255,255,255,0.08)", color: "rgba(245,242,241,0.7)", border: "1px solid rgba(255,255,255,0.12)" }}
                   >
                     <FileDown size={12} />
-                    PDF
+                    PDF Report
                   </button>
                   <button
                     onClick={downloadAsDocx}
@@ -360,7 +550,7 @@ const AiDetectionResult = ({ score, text, onHumanize, isHumanizing, isHumanized,
                     style={{ backgroundColor: "rgba(255,255,255,0.08)", color: "rgba(245,242,241,0.7)", border: "1px solid rgba(255,255,255,0.12)" }}
                   >
                     <FileType size={12} />
-                    Word
+                    Word Report
                   </button>
                 </div>
               )}

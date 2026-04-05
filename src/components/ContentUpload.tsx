@@ -1,13 +1,8 @@
-import { Upload } from "lucide-react";
-import { useRef, useEffect } from "react";
+import { Upload, CheckCircle2 } from "lucide-react";
+import { useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import mammoth from "mammoth";
 import { toast } from "sonner";
-
-// Debug: Unique ID to verify code update
-const UPDATE_ID = "v_2026_03_09_1810_UNPKG";
-console.log(`[ContentUpload] Loading version: ${UPDATE_ID}`);
 
 interface ContentUploadProps {
   onTextSubmit: (text: string) => void;
@@ -16,16 +11,12 @@ interface ContentUploadProps {
 
 const ContentUpload = ({ onTextSubmit, isLoading }: ContentUploadProps) => {
   const fileRef = useRef<HTMLInputElement>(null);
+  const [uploadInfo, setUploadInfo] = useState<{ name: string; chars: number } | null>(null);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Debug: Unique ID to verify code update
-    const VERIFY_ID = "v_2026_03_09_1815_WORKER";
-    console.log(`[ContentUpload] Handling file with version: ${VERIFY_ID}`);
-
-    // Vite-recommended way to load workers
     pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
       "pdfjs-dist/build/pdf.worker.mjs",
       import.meta.url
@@ -43,8 +34,10 @@ const ContentUpload = ({ onTextSubmit, isLoading }: ContentUploadProps) => {
           fullText += pageText + "\n";
         }
         if (fullText.trim()) {
-          onTextSubmit(fullText.trim());
-          toast.success(`Extracted ${pdf.numPages} pages from PDF`);
+          const extracted = fullText.trim();
+          onTextSubmit(extracted);
+          setUploadInfo({ name: file.name, chars: extracted.length });
+          toast.success(`Extracted ${pdf.numPages} page(s) from PDF`);
         } else {
           toast.error("No text found in PDF");
         }
@@ -52,7 +45,9 @@ const ContentUpload = ({ onTextSubmit, isLoading }: ContentUploadProps) => {
         const arrayBuffer = await file.arrayBuffer();
         const result = await mammoth.extractRawText({ arrayBuffer });
         if (result.value.trim()) {
-          onTextSubmit(result.value.trim());
+          const extracted = result.value.trim();
+          onTextSubmit(extracted);
+          setUploadInfo({ name: file.name, chars: extracted.length });
           toast.success("Text extracted from Word document");
         } else {
           toast.error("No text found in Word document");
@@ -60,7 +55,9 @@ const ContentUpload = ({ onTextSubmit, isLoading }: ContentUploadProps) => {
       } else {
         const text = await file.text();
         if (text.trim()) {
-          onTextSubmit(text.trim());
+          const extracted = text.trim();
+          onTextSubmit(extracted);
+          setUploadInfo({ name: file.name, chars: extracted.length });
         } else {
           toast.error("File is empty");
         }
@@ -74,7 +71,7 @@ const ContentUpload = ({ onTextSubmit, isLoading }: ContentUploadProps) => {
   };
 
   return (
-    <div className="flex gap-2">
+    <div className="flex flex-col gap-1">
       <input ref={fileRef} type="file" accept=".txt,.md,.doc,.docx,.pdf" onChange={handleFileUpload} className="hidden" />
       <button
         onClick={() => fileRef.current?.click()}
@@ -85,6 +82,14 @@ const ContentUpload = ({ onTextSubmit, isLoading }: ContentUploadProps) => {
         <Upload size={12} />
         Upload File
       </button>
+      {uploadInfo && (
+        <div className="flex items-center gap-1.5 text-xs" style={{ color: "rgba(34, 197, 94, 0.8)" }}>
+          <CheckCircle2 size={11} />
+          <span className="truncate max-w-[130px]" title={uploadInfo.name}>{uploadInfo.name}</span>
+          <span style={{ color: "rgba(245,242,241,0.3)" }}>•</span>
+          <span>{uploadInfo.chars.toLocaleString()} chars</span>
+        </div>
+      )}
     </div>
   );
 };

@@ -11,6 +11,7 @@ import CookingSelector, { cuisines, ingredients as cookIngredients, type Cuisine
 import AgentBuilder, { type CustomAgentConfig, getIconByKey, getCustomTheme, getCustomDropdownBg } from "@/components/AgentBuilder";
 import SocialPostBuilder from "@/components/SocialPostBuilder";
 import { DesignToolSelector, DesignPromptBuilder, aiTools, type AiTool, type DesignStage } from "@/components/DesignPromptBuilder";
+import MusicBuilder, { type MusicStage, type MusicMode } from "@/components/MusicBuilder";
 import ApiKeyControl, { type ApiSettings } from "@/components/ApiKeyControl";
 
 
@@ -34,6 +35,7 @@ interface Message {
   showPlatformSelector?: boolean;
   showGenreSelector?: boolean;
   showInstrumentSelector?: boolean;
+  showMusicBuilder?: boolean;
   showCuisineSelector?: boolean;
   showCookIngredientSelector?: boolean;
   showSocialBuilder?: boolean;
@@ -45,21 +47,42 @@ interface Message {
 
 interface DesignPromptState {
   idea: string;
-  style: string;
-  color: string;
-  lighting: string;
-  compose: string;
+  styleChoice: string;
+  sizeChoice: string;
+  colorTheme: string;
+  subjectText: string;
+  detailText: string;
   finalPrompt: string;
   stage: DesignStage;
 }
 
+interface MusicBuilderState {
+  topic: string;
+  mood: string;
+  tempo: string;
+  mode: string;
+  lyricsText: string;
+  sunoPrompt: string;
+  udioPrompt: string;
+  stage: MusicStage;
+}
+
 interface SocialPostState {
   topic: string;
+  style: string;
   hook: string;
   description: string;
-  final: string;
+  hashtags: string;
   cta: string;
-  stage: "hook_pick" | "hook_gen" | "desc_pick" | "desc_gen" | "final_pick" | "final_gen" | "cta_ask" | "cta_gen" | "done";
+  ctaType: string;
+  link: string;
+  stage:
+    | "style_pick"
+    | "hook_pick" | "hook_gen"
+    | "desc_pick" | "desc_gen"
+    | "tag_pick" | "tag_gen"
+    | "cta_ask" | "cta_gen"
+    | "done";
 }
 
 const GROQ_KEY = import.meta.env.VITE_GROQ_API_KEY || "";
@@ -227,6 +250,158 @@ const stripMarkdown = (text: string) => {
 
 const builtInAgents: BuiltInAgent[] = ["default", "content", "social", "design", "music", "cooking"];
 
+// ── Real AI-detection analysis functions ────────────────────────────────────
+
+function analyzeWordPatterns(text: string): { score: number; finding: string } {
+  const words = text.toLowerCase().match(/\b[a-z']+\b/g) ?? [];
+  const totalWords = words.length || 1;
+  const ttr = new Set(words).size / totalWords;
+  const ttrScore = Math.max(0, Math.min(100, Math.round((0.75 - ttr) / 0.35 * 100)));
+
+  const aiTransitions = ["moreover","furthermore","in conclusion","additionally","in summary",
+    "it is worth noting","it should be noted","indeed","certainly","notably",
+    "it is important to","it is essential to"];
+  const lowerText = text.toLowerCase();
+  const transitionCount = aiTransitions.reduce((acc, p) => acc + (lowerText.split(p).length - 1), 0);
+  const transitionScore = Math.min(90, Math.max(10, transitionCount * 20 + 10));
+
+  const bigrams: string[] = [];
+  for (let i = 0; i < words.length - 1; i++) bigrams.push(`${words[i]} ${words[i + 1]}`);
+  const bigramCounts: Record<string, number> = {};
+  bigrams.forEach(b => { bigramCounts[b] = (bigramCounts[b] ?? 0) + 1; });
+  const repeatedBigrams = Object.values(bigramCounts).filter(c => c > 1).length;
+  const bigramScore = Math.min(90, Math.round((repeatedBigrams / (bigrams.length || 1)) * 500));
+
+  const score = Math.max(0, Math.min(100, Math.round(ttrScore * 0.4 + transitionScore * 0.35 + bigramScore * 0.25)));
+  const finding = score >= 70
+    ? `Low vocabulary diversity (TTR: ${ttr.toFixed(2)}), ${transitionCount} AI transition phrase(s) detected.`
+    : score >= 40
+    ? `Moderate diversity (TTR: ${ttr.toFixed(2)}), some repeated patterns.`
+    : `Rich vocabulary (TTR: ${ttr.toFixed(2)}), natural word variety.`;
+  return { score, finding };
+}
+
+function analyzeToneStyle(text: string): { score: number; finding: string } {
+  const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 3);
+  const sentLens = sentences.map(s => s.trim().split(/\s+/).length);
+  const avg = sentLens.reduce((a, b) => a + b, 0) / (sentLens.length || 1);
+  const variance = sentLens.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / (sentLens.length || 1);
+  const burstiness = Math.sqrt(variance);
+  const burstiScore = Math.max(10, Math.min(90, Math.round((12 - burstiness) / 9 * 80 + 10)));
+
+  const formalWords = ["utilize","demonstrate","facilitate","endeavor","commence","obtain",
+    "implement","leverage","streamline","robust","comprehensive","synergy","paradigm","optimize"];
+  const lowerText = text.toLowerCase();
+  const words = lowerText.match(/\b[a-z]+\b/g) ?? [];
+  const formalCount = formalWords.reduce((acc, w) => acc + words.filter(tw => tw === w).length, 0);
+  const formalScore = Math.min(90, Math.round((formalCount / (words.length || 1)) * 4000));
+
+  const hedges = ["it may be","arguably","one might say","could be considered","perhaps",
+    "might suggest","tends to","appears to"];
+  const hedgeCount = hedges.reduce((acc, h) => acc + (lowerText.split(h).length - 1), 0);
+  const hedgeScore = Math.max(0, 50 - hedgeCount * 8);
+
+  const score = Math.max(0, Math.min(100, Math.round(burstiScore * 0.45 + formalScore * 0.35 + hedgeScore * 0.20)));
+  const finding = score >= 70
+    ? `Uniform formal tone, low burstiness (σ=${burstiness.toFixed(1)}), high formal-word density.`
+    : score >= 40
+    ? `Mixed tone, moderate burstiness (σ=${burstiness.toFixed(1)}), some formal markers.`
+    : `Varied natural tone, healthy burstiness (σ=${burstiness.toFixed(1)}), minimal formal register.`;
+  return { score, finding };
+}
+
+function analyzeStructure(text: string): { score: number; finding: string } {
+  const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+  const paraLens = paragraphs.map(p => p.trim().split(/\s+/).length);
+  const avgPara = paraLens.reduce((a, b) => a + b, 0) / (paraLens.length || 1);
+  const paraVariance = paraLens.reduce((a, b) => a + Math.pow(b - avgPara, 2), 0) / (paraLens.length || 1);
+  const paraStd = Math.sqrt(paraVariance);
+  const uniformScore = Math.max(15, Math.min(85, Math.round((40 - paraStd) / 30 * 70 + 15)));
+
+  const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 3);
+  const firstWords = sentences.map(s => s.trim().split(/\s+/)[0]?.toLowerCase() ?? "");
+  const firstWordCounts: Record<string, number> = {};
+  firstWords.forEach(w => { if (w) firstWordCounts[w] = (firstWordCounts[w] ?? 0) + 1; });
+  const maxRepeat = Math.max(...Object.values(firstWordCounts), 0);
+  const startRepeatScore = Math.min(85, Math.round((maxRepeat / (sentences.length || 1)) * 200));
+
+  const uniformParas = paraLens.filter(l => Math.abs(l - avgPara) < avgPara * 0.3).length;
+  const listScore = Math.round((uniformParas / (paragraphs.length || 1)) * 70);
+
+  const score = Math.max(0, Math.min(100, Math.round(uniformScore * 0.4 + startRepeatScore * 0.35 + listScore * 0.25)));
+  const finding = score >= 70
+    ? `Highly uniform paragraph structure (σ=${paraStd.toFixed(0)} words), predictable sentence openings.`
+    : score >= 40
+    ? `Moderately uniform structure (σ=${paraStd.toFixed(0)} words), some repetition.`
+    : `Organic structure with natural variation (σ=${paraStd.toFixed(0)} words).`;
+  return { score, finding };
+}
+
+function analyzeAiPatterns(text: string): { score: number; finding: string } {
+  const aiPhrases = ["delve","it's important to note","in today's world","in the realm of",
+    "the landscape of","boundaries of","it goes without saying","a testament to",
+    "at the end of the day","when it comes to","the bottom line","more than ever","dive into",
+    "crucial","tapestry","foster","pivotal","embark","unleash","game-changer","transformative",
+    "best practices","in the context of","as previously mentioned","it is clear that",
+    "in other words","to summarize","it is worth noting","needless to say","suffice it to say"];
+  const lowerText = text.toLowerCase();
+  const words = lowerText.match(/\b[a-z']+\b/g) ?? [];
+  let totalMatches = 0;
+  const matchedPhrases: string[] = [];
+  for (const phrase of aiPhrases) {
+    const count = lowerText.split(phrase).length - 1;
+    if (count > 0) { totalMatches += count; matchedPhrases.push(phrase); }
+  }
+  const density = (totalMatches / (words.length || 1)) * 100;
+  const densityScore = Math.min(95, Math.round(density * 18));
+  const metaPatterns = ["it is worth","it should be noted","it is important","notably,"];
+  const metaCount = metaPatterns.reduce((acc, p) => acc + (lowerText.split(p).length - 1), 0);
+  const metaScore = Math.min(80, metaCount * 18);
+
+  const score = Math.max(0, Math.min(100, Math.round(densityScore * 0.7 + metaScore * 0.3)));
+  const topMatches = matchedPhrases.slice(0, 3).map(p => `"${p}"`).join(", ");
+  const finding = score >= 70
+    ? `${totalMatches} AI phrase match(es) (${density.toFixed(1)}/100 words). Found: ${topMatches || "various patterns"}.`
+    : score >= 40
+    ? `${totalMatches} possible AI phrase(s). Some LLM markers present.`
+    : `Minimal AI phrase signatures — ${totalMatches} weak match(es).`;
+  return { score, finding };
+}
+
+function buildRagentSystemPrompt(customAgents: CustomAgentConfig[]): string {
+  const agentDocs = [
+    `🤖 **Ragent** (key: \`default\`) — General assistant, platform guide, and orchestrator. Handles general knowledge, advice, writing help, explanations. Does NOT specialize in content detection, social posts, image prompts, lyrics, or recipes.`,
+    `🔍 **AI Content Detector** (key: \`content\`) — Detects AI-generated text. User pastes 100+ characters, 4 tools run automatically (word pattern analysis, tone/style check, structure detection, AI pattern matching) and return a probability score. Can also humanize the text afterward. TRIGGER: user wants to check if text is AI-written, detect AI content, humanize AI text.`,
+    `🚀 **Social Agent** (key: \`social\`) — Creates platform-optimized social media posts for Instagram, YouTube, LinkedIn, Twitter/X, Facebook, TikTok. Multi-step builder: hook → body → hashtags → CTA. Requires platform selection first. TRIGGER: user wants a social media post, caption, tweet, LinkedIn post, TikTok script.`,
+    `🎨 **Design Agent** (key: \`design\`) — AI image prompt generator for Midjourney, DALL-E, Stable Diffusion, Leonardo AI, Flux. 5-stage pipeline: style → color → lighting → composition → final prompt. Requires AI tool selection first. TRIGGER: user wants an AI image prompt, wants to generate art, create an image with Midjourney/DALL-E/etc.`,
+    `🎵 **Music Agent** (key: \`music\`) — Lyrics & Suno AI music prompt generator. User picks genre + instruments, then gets a Suno-ready prompt + creative lyrics (2 verses + chorus). Requires genre and instrument selection first. TRIGGER: user wants song lyrics, music prompts, Suno AI prompts, wants to write a song.`,
+    `🍳 **Cooking Agent** (key: \`cooking\`) — Dish suggestions & step-by-step recipes. User picks cuisine + ingredients, gets 2–3 personalized dish recommendations with steps and pro tips. Requires cuisine and ingredient selection first. TRIGGER: user wants recipe ideas, cooking help, what to cook, food suggestions.`,
+    ...customAgents.map(ca =>
+      `✨ **${ca.name}** (key: \`${ca.id}\`) — ${ca.description || "Custom agent"}. Purpose: ${ca.systemPrompt?.slice(0, 100) || ""}... Tools: ${ca.tools?.join(", ") || "none"}.`
+    ),
+  ].join("\n\n");
+
+  return `You are Ragent, the main orchestrator of the Ragents platform — built by Abdul Rauf Jatoi.
+
+## Agents You Can Route To
+
+${agentDocs}
+
+## Your Role
+- Answer general questions, help with writing, brainstorming, explanations, and platform guidance directly.
+- When the user's request clearly matches a specialized agent, route them: briefly acknowledge the task, then end your message with \`[SWITCH:agentKey]\` on its own line.
+- Only include ONE \`[SWITCH:agentKey]\` per response. Never include it for casual chat or general questions you can handle yourself.
+- When routing, explain WHY that agent is the right choice in 1 sentence.
+- You know every agent in detail — use that to route accurately.
+- For agents requiring setup (social, design, music, cooking), warn the user they'll need to complete a quick setup step after switching.
+
+FORMATTING RULES (ALWAYS follow):
+- Match response length to the user's message. Greetings get 1 short sentence. Only give detail when asked.
+- Use **bold** for emphasis, bullet points for lists. Use ## headers only for long structured responses.
+- NEVER use horizontal rules (---), excessive line breaks, or decorative separators.
+- Use emojis sparingly and naturally. No filler phrases like "Great question!" — get straight to the point.`;
+}
+
 const normalizeReply = (text: string) => {
   return text
     .split("\n")
@@ -248,10 +423,34 @@ const normalizeReply = (text: string) => {
     .trim();
 };
 
+const getPlatformContext = (platform: Platform): string => {
+  const contexts: Record<Platform, string> = {
+    instagram: "- Hook must appear in first 2 lines (before 'more' cutoff)\n- Use line breaks between paragraphs\n- Emotional & visual language works best\n- End with a clear question or invitation",
+    youtube:   "- First 150 chars appear in search — make them keyword-rich\n- Sound enthusiastic but not clickbait\n- End with subscribe + bell notification CTA",
+    linkedin:  "- Open with a personal insight, surprising stat, or bold claim\n- Use line breaks (avoid walls of text)\n- Professional but human — share what you learned\n- End with a thought-provoking question",
+    twitter:   "- 280 characters max — every word must earn its place\n- Use conversational tone, short punchy sentences\n- 1-2 hashtags max\n- Tweets that end in questions get 23% more replies",
+    facebook:  "- Conversational and community-focused\n- Ask a question or create curiosity\n- 1-2 broad hashtags max\n- Avoid clickbait — Facebook punishes reach for it",
+    tiktok:    "- First 3 words decide if they stay\n- Extremely casual and direct — like texting a friend\n- Keep captions short; put hashtags at end",
+  };
+  return contexts[platform];
+};
+
+const getDesignPlatformContext = (tool: AiTool): string => {
+  const contexts: Record<AiTool, string> = {
+    midjourney: "End the prompt with: --ar {ratio} --v 6.1 --style raw. Use :: for emphasis weights. No full sentences — comma-separated descriptive phrases.",
+    dalle:      "Natural language sentences. Specify size like '1792x1024'. Be descriptive about texture, lighting, and setting. Avoid jargon or special syntax.",
+    stable:     "Start with quality tags: 'masterpiece, best quality, 8k, highly detailed, sharp focus'. Comma-separated tokens. Note negative prompt avoidance: blurry, low quality, deformed.",
+    leonardo:   "Use quality descriptors: 'cinematic photography, concept art, artstation trending, unreal engine 5'. Comma-separated. Specify lighting and render engine.",
+    flux:       "Clean descriptive natural language. No special syntax. Describe the scene as a detailed caption. Be specific about every visual element.",
+    imagen:     "Natural language, detailed descriptions. Start with main subject, then setting, lighting, style, and mood. Be precise and verbose.",
+  };
+  return contexts[tool];
+};
+
 const Dashboard = () => {
   const [activeAgent, setActiveAgent] = useState<Agent>("default");
   const [messages, setMessages] = useState<Message[]>([
-    { id: 1, text: "Hey! 👋 I'm Ragent, your guide to the Ragents platform by Abdul Rauf Jatoi. I know all the agents here — tell me what you need and I'll point you to the right one, or just chat with me!", sender: "bot" },
+    { id: 1, text: "## Hey, I'm Ragent 👋\n\nI'm your AI orchestrator on the **Ragents** platform — built by Abdul Rauf Jatoi.\n\n**I can help you with:**\n- General questions, writing, brainstorming, explanations\n- Routing you to the right specialist agent automatically\n\n**My agents:**\n- 🔍 **AI Content Detector** — detect & humanize AI-written text\n- 🚀 **Social Agent** — create platform-optimized social posts\n- 🎨 **Design Agent** — AI image prompts (Midjourney, DALL·E, etc.)\n- 🎵 **Music Agent** — lyrics + Suno AI music prompts\n- 🍳 **Cooking Agent** — dish suggestions & step-by-step recipes\n\nJust tell me what you need — I'll handle it or pass you to the right agent automatically.", sender: "bot" },
   ]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -269,6 +468,7 @@ const Dashboard = () => {
   const [selectedGenre, setSelectedGenre] = useState<MusicGenre | null>(null);
   const [selectedInstruments, setSelectedInstruments] = useState<Instrument[]>([]);
   const [musicStep, setMusicStep] = useState<"genre" | "instruments" | "ready">("genre");
+  const [musicBuilder, setMusicBuilder] = useState<MusicBuilderState | null>(null);
   const [selectedCuisine, setSelectedCuisine] = useState<Cuisine | null>(null);
   const [selectedCookIngredients, setSelectedCookIngredients] = useState<CookIngredient[]>([]);
   const [cookingStep, setCookingStep] = useState<"cuisine" | "ingredients" | "ready">("cuisine");
@@ -281,6 +481,7 @@ const Dashboard = () => {
   const [selectedAiTool, setSelectedAiTool] = useState<AiTool | null>(null);
   const [designPrompt, setDesignPrompt] = useState<DesignPromptState | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const pendingDelegation = useRef<{ targetKey: string; originalMessage: string } | null>(null);
 
   const isCustomAgent = !builtInAgents.includes(activeAgent as BuiltInAgent);
   const customAgent = customAgents.find((a) => a.id === activeAgent);
@@ -296,6 +497,17 @@ const Dashboard = () => {
   useEffect(() => {
     localStorage.setItem("ragents_custom_agents", JSON.stringify(customAgents));
   }, [customAgents]);
+
+  useEffect(() => {
+    const pd = pendingDelegation.current;
+    if (pd && activeAgent === pd.targetKey) {
+      pendingDelegation.current = null;
+      const msgToForward = pd.originalMessage;
+      setTimeout(() => {
+        handleSendWithText(msgToForward);
+      }, 150);
+    }
+  }, [activeAgent]);
 
   const contentAnalysisTools = [
     {
@@ -345,68 +557,64 @@ const Dashboard = () => {
   ];
 
   const detectAi = async (text: string, onToolUpdate?: (toolName: string, result: string, score: number) => void): Promise<number> => {
-    // Basic burstiness calculation (variance in sentence lengths)
-    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
-    const sentenceLengths = sentences.map(s => s.trim().split(/\s+/).length);
-    const avgLen = sentenceLengths.reduce((a, b) => a + b, 0) / (sentenceLengths.length || 1);
-    const variance = sentenceLengths.reduce((a, b) => a + Math.pow(b - avgLen, 2), 0) / (sentenceLengths.length || 1);
-    const burstiness = Math.sqrt(variance); // Standard deviation as a proxy for burstiness
+    // Run 4 real client-side analysis tools
+    const wordResult = analyzeWordPatterns(text);
+    onToolUpdate?.("word_pattern_analysis", wordResult.finding, wordResult.score);
 
-    const prompt = `Perform a high-precision forensic analysis of the following text to estimate the probability (0-100%) that it was AI-generated.
-    
-Focus on:
-- Perplexity (Randomness and variety in word choice).
-- Burstiness (Drastic variance in sentence structure and length).
-- LLM stylistic markers (Over-usage of "Indeed", "Moreover", "Furthermore", or extremely balanced perspectives).
-- Absence of human-like "noise" or idiomatic nuance.
+    const toneResult = analyzeToneStyle(text);
+    onToolUpdate?.("tone_style_check", toneResult.finding, toneResult.score);
 
-Text:
-"""${text.slice(0, 3000)}"""
+    const structResult = analyzeStructure(text);
+    onToolUpdate?.("structure_detection", structResult.finding, structResult.score);
 
-Respond with:
-1. Tool calls for detailed analysis.
-2. A final summary with the overall AI Probability Score (0-100).
-FORMAT: Final AI Probability Score: [integer]`;
+    const patternResult = analyzeAiPatterns(text);
+    onToolUpdate?.("ai_pattern_matching", patternResult.finding, patternResult.score);
 
-    const res = await callAI([{ role: "user", content: prompt }], { ...apiSettings, tools: contentAnalysisTools } as any);
+    // Weighted composite score
+    const compositeScore = Math.round(
+      wordResult.score * 0.30 +
+      toneResult.score * 0.25 +
+      structResult.score * 0.25 +
+      patternResult.score * 0.20
+    );
 
-    let finalScore = 50;
+    // One LLM call for expert interpretation + score confirmation
+    const analysisContext = [
+      `Word Pattern Analysis (score: ${wordResult.score}/100): ${wordResult.finding}`,
+      `Tone & Style Check (score: ${toneResult.score}/100): ${toneResult.finding}`,
+      `Structure Detection (score: ${structResult.score}/100): ${structResult.finding}`,
+      `AI Pattern Matching (score: ${patternResult.score}/100): ${patternResult.finding}`,
+      `Composite Score: ${compositeScore}/100`,
+    ].join("\n");
 
-    if (typeof res === "object" && res.toolCalls) {
-      for (const tc of res.toolCalls) {
-        // Tie tool scores to the actual burstiness of the text
-        // Lower burstiness = higher AI score
-        const baseScore = burstiness < 5 ? 85 : burstiness < 10 ? 60 : burstiness < 15 ? 35 : 15;
-        const toolScore = Math.max(0, Math.min(100, baseScore + Math.floor(Math.random() * 15 - 7)));
-        
-        const results: Record<string, string> = {
-          word_pattern_analysis: toolScore > 60 ? "Highly uniform word distribution, lacking organic variety." : "Variable word choice with natural vocabulary shifts.",
-          tone_style_check: toolScore > 60 ? "Predictable academic/formal tone without human-like inflection." : "Nuanced, personalized tone with authentic human flair.",
-          structure_detection: toolScore > 60 ? `Low burstiness score (${burstiness.toFixed(1)}). Uniform rhythm.` : `High burstiness score (${burstiness.toFixed(1)}). Organic flow.`,
-          ai_pattern_matching: toolScore > 60 ? "Strong correlation with standard large language model signatures." : "Significant deviations from typical LLM output patterns.",
-        };
+    const llmPrompt = `You are an expert AI content forensics analyst. Four algorithms analyzed the text below:
 
-        onToolUpdate?.(tc.name, results[tc.name] || "Analysis complete.", toolScore);
-        await new Promise(r => setTimeout(r, 800)); // Visual delay
+${analysisContext}
+
+Based on these findings and your own judgment:
+1. Give a 2-3 sentence expert interpretation of why this text is or isn't AI-generated.
+2. Confirm or slightly adjust the composite score (stay within ±15 of ${compositeScore}).
+
+TEXT:
+"""${text.slice(0, 2500)}"""
+
+Respond ONLY in this format:
+Expert Assessment: [2-3 sentence interpretation]
+Final AI Probability Score: [integer 0-100]`;
+
+    let finalScore = compositeScore;
+    try {
+      const llmRes = await callAI([{ role: "user", content: llmPrompt }], apiSettings);
+      const resText = typeof llmRes === "string" ? llmRes : "";
+      const match = resText.match(/Final AI Probability Score:\s*(\d+)/i);
+      if (match) {
+        const parsed = parseInt(match[1], 10);
+        if (!isNaN(parsed)) {
+          finalScore = Math.max(compositeScore - 15, Math.min(compositeScore + 15, parsed));
+          finalScore = Math.max(0, Math.min(100, finalScore));
+        }
       }
-
-      const lastPrompt = `What is the final AI probability score (0-100)? Provide ONLY: Final AI Probability Score: [number]`;
-      const finalRes = await callAI([
-        { role: "user", content: prompt },
-        { role: "assistant", content: "Analysis tools completed." },
-        { role: "user", content: lastPrompt }
-      ], apiSettings);
-      
-      const scoreStr = typeof finalRes === "string" ? finalRes : "";
-      const scoreMatch = scoreStr.match(/Final AI Probability Score:\s*(\d+)/i) || scoreStr.match(/(\d+)/);
-      const num = scoreMatch ? parseInt(scoreMatch[1], 10) : 50;
-      finalScore = isNaN(num) ? 50 : Math.min(100, Math.max(0, num));
-    } else {
-      const scoreStr = typeof res === "string" ? res : "";
-      const scoreMatch = scoreStr.match(/Final AI Probability Score:\s*(\d+)/i) || scoreStr.match(/(\d+)/);
-      const num = scoreMatch ? parseInt(scoreMatch[1], 10) : 50;
-      finalScore = isNaN(num) ? 50 : Math.min(100, Math.max(0, num));
-    }
+    } catch { /* LLM failed — composite score stands */ }
 
     return finalScore;
   };
@@ -573,8 +781,93 @@ Output ONLY the raw humanized text. NO markdown, NO formatting, NO preamble.`;
     setMessages((prev) => [
       ...prev,
       { id: Date.now(), text: `Instruments: ${instLabels}`, sender: "user" },
-      { id: Date.now() + 1, text: `Perfect! 🎵 Now tell me the theme, mood, or topic for your song and I'll generate lyrics + a Suno-ready prompt!`, sender: "bot" },
+      { id: Date.now() + 1, text: `Perfect! 🎵 Now tell me the theme, mood, or topic for your track:`, sender: "bot" },
     ]);
+  };
+
+  const handleMusicGenerate = (topic: string) => {
+    if (!selectedGenre) return;
+    const userMsg: Message = { id: Date.now(), text: topic, sender: "user" };
+    setMessages((prev) => [...prev, userMsg]);
+    setInput("");
+    const state: MusicBuilderState = {
+      topic, mood: "", tempo: "", mode: "",
+      lyricsText: "", sunoPrompt: "", udioPrompt: "", stage: "mood_pick",
+    };
+    setMusicBuilder(state);
+    setMessages((prev) => [...prev, {
+      id: Date.now() + 1,
+      text: "Let's create your track! Pick a mood first:",
+      sender: "bot",
+      showMusicBuilder: true,
+    }]);
+  };
+
+  const handleMusicMoodPick = (mood: string) => {
+    setMusicBuilder((prev) => prev ? { ...prev, mood, stage: "tempo_pick" } : prev);
+  };
+
+  const handleMusicTempoPick = (tempo: string) => {
+    setMusicBuilder((prev) => prev ? { ...prev, tempo, stage: "mode_pick" } : prev);
+  };
+
+  const handleMusicModePick = async (mode: MusicMode) => {
+    if (!musicBuilder || !selectedGenre) return;
+    const genreLabel = genres[selectedGenre].label;
+    const instLabels = selectedInstruments.map((i) => instruments[i].label).join(", ") || "no specific instruments";
+    const raw = "Output ONLY the raw text. No labels, no markdown headers, no explanations.";
+
+    setMusicBuilder((prev) => prev ? { ...prev, mode, stage: "lyrics_gen" } : prev);
+    setIsLoading(true);
+
+    try {
+      let lyricsText = "";
+
+      if (mode === "beat") {
+        // Beat/instrumental description instead of lyrics
+        const beatReply = await callAI([{
+          role: "system",
+          content: `You are a professional beatmaker and music producer. Describe a detailed instrumental beat arrangement for a ${genreLabel} track. Mood: ${musicBuilder.mood}. Tempo: ${musicBuilder.tempo}. Instruments: ${instLabels}. ${raw} Write 4-6 sentences describing the beat structure, drops, transitions, and feel. No lyrics.`,
+        }, { role: "user", content: musicBuilder.topic }], apiSettings);
+        lyricsText = stripMarkdown(normalizeReply(beatReply));
+      } else if (mode === "alter") {
+        // Alteration/remix rewrite
+        const alterReply = await callAI([{
+          role: "system",
+          content: `You are a professional lyricist. The user wants to rewrite/remix their concept as a ${genreLabel} song. Mood: ${musicBuilder.mood}. Tempo: ${musicBuilder.tempo}. Instruments: ${instLabels}. ${raw} Write an improved, catchy version: 1 verse (4 lines) + chorus (4 lines) + 1 verse (4 lines). Label each section on its own line like: [Verse 1], [Chorus], [Verse 2].`,
+        }, { role: "user", content: musicBuilder.topic }], apiSettings);
+        lyricsText = stripMarkdown(normalizeReply(alterReply));
+      } else {
+        // write or full — generate lyrics
+        const lyricsReply = await callAI([{
+          role: "system",
+          content: `You are a professional songwriter. Write ${genreLabel} song lyrics. Mood: ${musicBuilder.mood}. Tempo: ${musicBuilder.tempo}. Instruments: ${instLabels}. ${raw} Structure: [Verse 1] (4 lines), [Pre-Chorus] (2 lines), [Chorus] (4 lines), [Verse 2] (4 lines), [Chorus] (4 lines), [Bridge] (2 lines), [Outro] (2 lines). Each section label on its own line. Make it catchy and rhythmically tight.`,
+        }, { role: "user", content: musicBuilder.topic }], apiSettings);
+        lyricsText = stripMarkdown(normalizeReply(lyricsReply));
+      }
+
+      setMusicBuilder((prev) => prev ? { ...prev, lyricsText, stage: "prompts_gen" } : prev);
+
+      // Suno prompt
+      const sunoReply = await callAI([{
+        role: "system",
+        content: `You are a Suno AI prompt specialist. Write a concise Suno AI music generation prompt (25-40 words). Include: genre, mood, tempo, instruments, vocal style, and energy. ${raw} No sentences — use comma-separated descriptive tags. End with BPM if known.`,
+      }, { role: "user", content: `Genre: ${genreLabel}. Mood: ${musicBuilder.mood}. Tempo: ${musicBuilder.tempo}. Instruments: ${instLabels}. Topic: ${musicBuilder.topic}.` }], apiSettings);
+      const sunoPrompt = stripMarkdown(normalizeReply(sunoReply));
+
+      // Udio prompt (different style emphasis)
+      const udioReply = await callAI([{
+        role: "system",
+        content: `You are a Udio AI prompt specialist. Write a Udio music prompt (20-30 words). Udio favors full natural language descriptions over tags. Describe the sound, feeling, and atmosphere as if painting a picture. ${raw}`,
+      }, { role: "user", content: `Genre: ${genreLabel}. Mood: ${musicBuilder.mood}. Tempo: ${musicBuilder.tempo}. Instruments: ${instLabels}. Topic: ${musicBuilder.topic}.` }], apiSettings);
+      const udioPrompt = stripMarkdown(normalizeReply(udioReply));
+
+      setMusicBuilder((prev) => prev ? { ...prev, sunoPrompt, udioPrompt, stage: "done" } : prev);
+    } catch (err: any) {
+      toast.error("Music generation failed: " + (err.message || "Unknown error"));
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleCuisineSelect = (c: Cuisine) => {
@@ -608,75 +901,88 @@ Output ONLY the raw humanized text. NO markdown, NO formatting, NO preamble.`;
     const userMsg: Message = { id: Date.now(), text: topic, sender: "user" };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
-    const state: SocialPostState = { topic, hook: "", description: "", final: "", cta: "", stage: "hook_pick" };
+    const state: SocialPostState = { topic, style: "", hook: "", description: "", hashtags: "", cta: "", ctaType: "", link: "", stage: "style_pick" };
     setSocialPost(state);
-    setMessages((prev) => [...prev, { id: Date.now() + 1, text: "Let's build your post step by step! Pick a length for the hook:", sender: "bot", showSocialBuilder: true }]);
+    setMessages((prev) => [...prev, { id: Date.now() + 1, text: "Let's build your post! First, pick a style:", sender: "bot", showSocialBuilder: true }]);
   };
 
-  const handleSocialLengthPick = async (step: "hook" | "description" | "finalize", pref: string) => {
+  const handleSocialStylePick = (style: string) => {
+    setSocialPost((prev) => prev ? { ...prev, style, stage: "hook_pick" } : prev);
+  };
+
+  const handleSocialLengthPick = async (step: "hook" | "description", pref: string) => {
     if (!socialPost || !selectedPlatform) return;
     const platLabel = platforms[selectedPlatform].label;
     const lengthGuide = pref === "short" ? "1 sentence max, punchy" : pref === "medium" ? "2-3 sentences, balanced" : "4-5 sentences, detailed";
     setIsLoading(true);
 
     if (step === "hook") {
-      setSocialPost({ ...socialPost, stage: "hook_gen" });
+      setSocialPost((prev) => prev ? { ...prev, stage: "hook_gen" } : prev);
       try {
-        const reply = await callAI([
-          { role: "system", content: `Write a ${platLabel} hook for the topic below. Output ONLY the hook text itself — no labels, no explanations, no tips, no "Here's your hook:", no guidance. Just the raw hook text ready to post. Length: ${lengthGuide}.` },
-          { role: "user", content: socialPost.topic },
-        ], apiSettings);
+        const reply = await callAI([{
+          role: "system",
+          content: `You are a ${platLabel} content expert. Write a SINGLE hook line for a ${platLabel} post with a ${socialPost.style} tone.\n\nPlatform rules:\n${getPlatformContext(selectedPlatform)}\n\nOutput ONLY the raw hook text. No labels, no explanations. Length: ${lengthGuide}.`,
+        }, { role: "user", content: socialPost.topic }], apiSettings);
         const hook = stripMarkdown(normalizeReply(reply));
-
         setSocialPost((prev) => prev ? { ...prev, hook, stage: "desc_pick" } : prev);
       } catch { toast.error("Hook generation failed"); }
     } else if (step === "description") {
-      setSocialPost({ ...socialPost, stage: "desc_gen" });
+      setSocialPost((prev) => prev ? { ...prev, stage: "desc_gen" } : prev);
       try {
-        const reply = await callAI([
-          { role: "system", content: `Write a ${platLabel} post body/description that follows this hook: "${socialPost.hook}". Output ONLY the description text — no labels, no explanations, no tips, no "Here's your description:". Just the raw description text ready to post. Casual yet engaging. Length: ${lengthGuide}.` },
-          { role: "user", content: socialPost.topic },
-        ], apiSettings);
+        const reply = await callAI([{
+          role: "system",
+          content: `You are a ${platLabel} content expert. Write the post body with a ${socialPost.style} tone.\n\nFollows hook: "${socialPost.hook}"\nPlatform rules:\n${getPlatformContext(selectedPlatform)}\n\nOutput ONLY the body text. No hook, no hashtags, no CTA. Length: ${lengthGuide}.`,
+        }, { role: "user", content: socialPost.topic }], apiSettings);
         const desc = stripMarkdown(normalizeReply(reply));
-        setSocialPost((prev) => prev ? { ...prev, description: desc, stage: "final_pick" } : prev);
+        setSocialPost((prev) => prev ? { ...prev, description: desc, stage: "tag_pick" } : prev);
       } catch { toast.error("Description generation failed"); }
-    } else if (step === "finalize") {
-      setSocialPost({ ...socialPost, stage: "final_gen" });
-      try {
-        const reply = await callAI([
-          { role: "system", content: `Write a closing line with relevant hashtags for a ${platLabel} post. Hook: "${socialPost.hook}" Body: "${socialPost.description}". Output ONLY the closing text + hashtags — no labels, no explanations, no tips, no "Here's your closing:". Just the raw text ready to post. Length: ${lengthGuide}.` },
-          { role: "user", content: socialPost.topic },
-        ], apiSettings);
-        const final = stripMarkdown(normalizeReply(reply));
-
-        setSocialPost((prev) => prev ? { ...prev, final, stage: "cta_ask" } : prev);
-      } catch { toast.error("Finalize failed"); }
     }
     setIsLoading(false);
   };
 
-  const handleSocialCta = async (addCta: boolean) => {
+  const handleSocialTagPick = async (strategy: "minimal" | "moderate" | "maximum") => {
+    if (!socialPost || !selectedPlatform) return;
+    const platLabel = platforms[selectedPlatform].label;
+    const tagCount = strategy === "minimal" ? "2-3 highly focused hashtags" : strategy === "moderate" ? "8-12 targeted hashtags" : "20-25 niche + broad hashtags";
+    setSocialPost((prev) => prev ? { ...prev, stage: "tag_gen" } : prev);
+    setIsLoading(true);
+    try {
+      const reply = await callAI([{
+        role: "system",
+        content: `Generate hashtags for a ${platLabel} post. Output ONLY the hashtags as a single line separated by spaces. Use ${tagCount}. Mix popular + niche tags.`,
+      }, { role: "user", content: `Topic: "${socialPost.topic}" Hook: "${socialPost.hook}"` }], apiSettings);
+      const hashtags = stripMarkdown(normalizeReply(reply));
+      setSocialPost((prev) => prev ? { ...prev, hashtags, stage: "cta_ask" } : prev);
+    } catch { toast.error("Hashtag generation failed"); }
+    finally { setIsLoading(false); }
+  };
+
+  const handleSocialCta = async (addCta: boolean, ctaType?: string) => {
     if (!socialPost || !selectedPlatform) return;
     if (!addCta) {
       setSocialPost((prev) => prev ? { ...prev, stage: "done" } : prev);
       return;
     }
-    setSocialPost((prev) => prev ? { ...prev, stage: "cta_gen" } : prev);
+    const ctaTypeLabel = ctaType || "general";
+    setSocialPost((prev) => prev ? { ...prev, stage: "cta_gen", ctaType: ctaTypeLabel } : prev);
     setIsLoading(true);
     try {
       const platLabel = platforms[selectedPlatform].label;
-      const ctaReply = await callAI([
-        { role: "system", content: `Write a call-to-action line for a ${platLabel} post. Output ONLY the CTA text — no labels, no explanations, no "Here's your CTA:". Just the raw CTA sentence ready to post.` },
-        { role: "user", content: `Hook: "${socialPost.hook}" Body: "${socialPost.description}" Topic: "${socialPost.topic}"` },
-      ], apiSettings);
+      const ctaReply = await callAI([{
+        role: "system",
+        content: `Write a ${ctaTypeLabel} call-to-action for a ${platLabel} post with ${socialPost.style} tone. Output ONLY the CTA text — no labels, no explanations.`,
+      }, { role: "user", content: `Hook: "${socialPost.hook}" Topic: "${socialPost.topic}"` }], apiSettings);
       setSocialPost((prev) => prev ? { ...prev, cta: stripMarkdown(normalizeReply(ctaReply)), stage: "done" } : prev);
-
     } catch {
       toast.error("CTA generation failed");
       setSocialPost((prev) => prev ? { ...prev, stage: "done" } : prev);
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleSocialLinkChange = (link: string) => {
+    setSocialPost((prev) => prev ? { ...prev, link } : prev);
   };
 
   const handleAiToolSelect = (tool: AiTool) => {
@@ -688,66 +994,72 @@ Output ONLY the raw humanized text. NO markdown, NO formatting, NO preamble.`;
     ]);
   };
 
-  const handleDesignGenerate = async (idea: string) => {
+  const handleDesignGenerate = (idea: string) => {
     if (!selectedAiTool) return;
-    const toolLabel = aiTools[selectedAiTool].label;
     const userMsg: Message = { id: Date.now(), text: idea, sender: "user" };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
-    setIsLoading(true);
-
-    const state: DesignPromptState = { idea, style: "", color: "", lighting: "", compose: "", finalPrompt: "", stage: "style_gen" };
+    const state: DesignPromptState = {
+      idea, styleChoice: "", sizeChoice: "", colorTheme: "",
+      subjectText: "", detailText: "", finalPrompt: "", stage: "style_pick",
+    };
     setDesignPrompt(state);
-    setMessages((prev) => [...prev, { id: Date.now() + 1, text: "Analyzing your idea...", sender: "bot", showDesignBuilder: true }]);
+    setMessages((prev) => [...prev, {
+      id: Date.now() + 1,
+      text: "Let's craft your prompt! First, pick an art style:",
+      sender: "bot",
+      showDesignBuilder: true,
+    }]);
+  };
 
-    const rawPrompt = (s: string) => `Output ONLY the raw text. No labels, no markdown, no explanations, no "Here's...". Just plain text.`;
+  const handleDesignStylePick = (styleChoice: string) => {
+    setDesignPrompt((prev) => prev ? { ...prev, styleChoice, stage: "size_pick" } : prev);
+  };
 
+  const handleDesignSizePick = (sizeChoice: string) => {
+    setDesignPrompt((prev) => prev ? { ...prev, sizeChoice, stage: "color_pick" } : prev);
+  };
+
+  const handleDesignColorPick = async (colorTheme: string) => {
+    if (!designPrompt || !selectedAiTool) return;
+    const toolLabel = aiTools[selectedAiTool].label;
+    const platformCtx = getDesignPlatformContext(selectedAiTool);
+    const raw = "Output ONLY the raw text. No labels, no markdown, no explanations. Just plain text.";
+
+    setDesignPrompt((prev) => prev ? { ...prev, colorTheme, stage: "subject_gen" } : prev);
+    setIsLoading(true);
     try {
-      // Style
-      const styleReply = await callAI([
-        { role: "system", content: `You are an art style analyst for ${toolLabel}. Given an image idea, determine the best art style, medium, and aesthetic. ${rawPrompt("")} 1-2 sentences.` },
-        { role: "user", content: idea },
-      ], apiSettings);
-      state.style = stripMarkdown(normalizeReply(styleReply));
-      state.stage = "color_gen";
-      setDesignPrompt({ ...state });
+      // Subject analysis
+      const subjectReply = await callAI([{
+        role: "system",
+        content: `You are a visual subject analyst for ${toolLabel}. Identify and describe the main subject, pose, expression, and key visual elements. Style: ${designPrompt.styleChoice}. Color theme: ${colorTheme}. ${raw} 1-2 sentences.`,
+      }, { role: "user", content: designPrompt.idea }], apiSettings);
+      const subjectText = stripMarkdown(normalizeReply(subjectReply));
+      setDesignPrompt((prev) => prev ? { ...prev, subjectText, stage: "detail_gen" } : prev);
 
-      // Color
-      const colorReply = await callAI([
-        { role: "system", content: `You are a color palette designer for ${toolLabel}. Given idea: "${idea}" and style: "${state.style}", suggest the perfect color palette with gradients & tones. ${rawPrompt("")} 1-2 sentences.` },
-        { role: "user", content: idea },
-      ], apiSettings);
-      state.color = stripMarkdown(normalizeReply(colorReply));
-      state.stage = "lighting_gen";
-      setDesignPrompt({ ...state });
+      // Technical details
+      const detailReply = await callAI([{
+        role: "system",
+        content: `You are a technical prompt specialist for ${toolLabel}. Add lighting setup, camera/lens details, quality keywords, and atmosphere. Platform rules: ${platformCtx}. Style: ${designPrompt.styleChoice}. Size/ratio: ${designPrompt.sizeChoice}. ${raw} 1-2 sentences of technical descriptors only.`,
+      }, { role: "user", content: `Topic: ${designPrompt.idea}. Subject: ${subjectText}` }], apiSettings);
+      const detailText = stripMarkdown(normalizeReply(detailReply));
+      setDesignPrompt((prev) => prev ? { ...prev, detailText, stage: "final_gen" } : prev);
 
-      // Lighting
-      const lightReply = await callAI([
-        { role: "system", content: `You are a lighting & mood designer for ${toolLabel}. Given idea: "${idea}", style: "${state.style}", colors: "${state.color}", describe the ideal lighting, atmosphere, and mood. ${rawPrompt("")} 1-2 sentences.` },
-        { role: "user", content: idea },
-      ], apiSettings);
-      state.lighting = stripMarkdown(normalizeReply(lightReply));
-      state.stage = "compose_gen";
-      setDesignPrompt({ ...state });
-
-      // Composition
-      const compReply = await callAI([
-        { role: "system", content: `You are a composition planner for ${toolLabel}. Given idea: "${idea}", style: "${state.style}", suggest camera angle, perspective, layout, and framing. ${rawPrompt("")} 1-2 sentences.` },
-        { role: "user", content: idea },
-      ], apiSettings);
-      state.compose = stripMarkdown(normalizeReply(compReply));
-      state.stage = "final_gen";
-      setDesignPrompt({ ...state });
-
-      // Final prompt
-      const finalReply = await callAI([
-        { role: "system", content: `You are a ${toolLabel} prompt engineer. Combine all these elements into one optimized, ready-to-use ${toolLabel} prompt. Style: "${state.style}". Colors: "${state.color}". Lighting: "${state.lighting}". Composition: "${state.compose}". ${rawPrompt("")} Output a single cohesive prompt paragraph, no line breaks.` },
-        { role: "user", content: idea },
-      ], apiSettings);
-      state.finalPrompt = stripMarkdown(normalizeReply(finalReply));
-
-      state.stage = "done";
-      setDesignPrompt({ ...state });
+      // Final prompt assembly
+      const finalReply = await callAI([{
+        role: "system",
+        content: `You are a ${toolLabel} prompt engineer. Assemble one perfect, ready-to-use ${toolLabel} prompt from:
+- Idea: ${designPrompt.idea}
+- Style: ${designPrompt.styleChoice}
+- Aspect Ratio: ${designPrompt.sizeChoice}
+- Color Theme: ${colorTheme}
+- Subject: ${subjectText}
+- Technical Details: ${detailText}
+Platform rules: ${platformCtx}
+${raw} One cohesive prompt. Follow platform syntax exactly.`,
+      }, { role: "user", content: designPrompt.idea }], apiSettings);
+      const finalPrompt = stripMarkdown(normalizeReply(finalReply));
+      setDesignPrompt((prev) => prev ? { ...prev, finalPrompt, stage: "done" } : prev);
     } catch (err: any) {
       toast.error("Design generation failed: " + (err.message || "Unknown error"));
     } finally {
@@ -755,54 +1067,59 @@ Output ONLY the raw humanized text. NO markdown, NO formatting, NO preamble.`;
     }
   };
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+  const handleSendWithText = (text: string) => handleSend(text);
 
-    if (activeAgent === "content" && input.trim().length > 100) {
-      await handleContentCheck(input.trim());
-      setInput("");
+  const handleSend = async (explicitText?: string) => {
+    const textToSend = (explicitText ?? input).trim();
+    if (!textToSend || isLoading) return;
+
+    if (activeAgent === "content" && textToSend.length > 100) {
+      await handleContentCheck(textToSend);
+      if (!explicitText) setInput("");
       return;
     }
 
-    if (activeAgent === "social" && selectedPlatform && input.trim()) {
-      handleSocialGenerate(input.trim());
+    if (activeAgent === "social" && selectedPlatform && textToSend) {
+      handleSocialGenerate(textToSend);
+      if (!explicitText) setInput("");
       return;
     }
 
-    if (activeAgent === "design" && selectedAiTool && input.trim()) {
-      await handleDesignGenerate(input.trim());
+    if (activeAgent === "design" && selectedAiTool && textToSend) {
+      handleDesignGenerate(textToSend);
+      if (!explicitText) setInput("");
+      return;
+    }
+
+    if (activeAgent === "music" && musicStep === "ready" && selectedGenre && textToSend) {
+      handleMusicGenerate(textToSend);
+      if (!explicitText) setInput("");
       return;
     }
 
     // Direct Switch Logic
-    const directSwitchMatch = input.toLowerCase().match(/(?:switch|change|go to)(?: me to)? (?:the )?(\w+)(?: agent)?/);
+    const directSwitchMatch = textToSend.toLowerCase().match(
+      /(?:switch|change|go to|take me to|use|open)(?: me to| the)? (?:the )?(\w[\w\s]*?)(?: agent)?$/
+    );
     if (directSwitchMatch) {
-      const target = directSwitchMatch[1].toLowerCase();
-      const found = builtInAgents.find(a => a === target || agents[a as BuiltInAgent]?.label.toLowerCase().includes(target))
-        || customAgents.find(ca => ca.id.toLowerCase() === target || ca.name.toLowerCase().includes(target))?.id;
+      const target = directSwitchMatch[1].toLowerCase().trim();
+      const found = builtInAgents.find(a => a === target)
+        || builtInAgents.find(a => agents[a as BuiltInAgent]?.label.toLowerCase().includes(target))
+        || customAgents.find(ca => ca.id === target || ca.name.toLowerCase().includes(target))?.id;
 
       if (found) {
         switchAgent(found);
-        setInput("");
+        if (!explicitText) setInput("");
         return;
       }
     }
 
-    const userMsg: Message = { id: Date.now(), text: input, sender: "user" };
+    const originalInput = textToSend;
+    const userMsg: Message = { id: Date.now(), text: originalInput, sender: "user" };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
-    setInput("");
+    if (!explicitText) setInput("");
     setIsLoading(true);
-
-    const allAgentInfo = [
-      "🤖 **Ragent** (default) — The main assistant. Knows about all agents, the platform, and can help you pick the right agent for your task.",
-      "🔍 **AI Content Detector** — Detect AI-generated text. Paste content (100+ chars) and it runs 4 analysis tools (word patterns, tone check, structure detection, AI pattern matching) to give you an AI probability score. You can then humanize the text.",
-      "🚀 **Social Agent** — Generate platform-optimized social media posts for Twitter, Instagram, LinkedIn, TikTok, Reddit, YouTube, and Facebook.",
-      "🎨 **Design Agent** — AI image prompt generator. Describe your idea and get detailed prompts optimized for Midjourney, DALL-E, or Stable Diffusion.",
-      "🎵 **Music Agent** — Lyrics & music prompt generator. Pick a genre + instruments, then get Suno-ready prompts and creative lyrics.",
-      "🍳 **Cooking Agent** — Dish suggestions & recipes. Pick a cuisine + ingredients, then get personalized dish recommendations with steps.",
-      ...customAgents.map(ca => `✨ **${ca.name}** (custom) — ${ca.description || "Custom agent"}`),
-    ].join("\n");
 
     const formatRules = `\n\nFORMATTING RULES (ALWAYS follow):
 - Match your response length to the user's message. If they say "hi" or "hello", reply with 1 short friendly sentence. Do NOT over-explain simple greetings.
@@ -813,22 +1130,11 @@ Output ONLY the raw humanized text. NO markdown, NO formatting, NO preamble.`;
 - No filler phrases like "Great question!" or "Absolutely!" — get straight to the point.`;
 
     const sharedSwitchInfo = `\n\n**Switching Agents:**
-If the user asks for something outside your specialty (e.g., recipes while in Content Detector), recommend the right agent using [SWITCH:agentkey]. 
+If the user asks for something outside your specialty (e.g., recipes while in Content Detector), recommend the right agent using [SWITCH:agentkey].
 Available keys: default (Ragent), content (AI Detector), social (Social Agent), design (Design Agent), music (Music Agent), cooking (Cooking Agent).
 Example: "I can't do recipes, but you can switch to our Cooking Agent! [SWITCH:cooking]"`;
 
-    let systemPrompt = `You are Ragent, the main assistant of the Ragents platform — built by Abdul Rauf Jatoi.
-
-Ragents is an AI agent platform where each agent specializes in a different task. Users can also create custom agents.
-
-**Available Agents:**
-${allAgentInfo}
-
-**Your Role:**
-- Help users with general questions concisely
-- If a user needs a specific task, recommend the right agent and include [SWITCH:agentkey] in your response (agentkey: content, social, design, music, cooking, or custom agent ID)
-- Only suggest switching when the user clearly wants a task another agent handles. For casual chat, just respond normally.
-- You can answer general questions yourself without switching${formatRules}${sharedSwitchInfo}`;
+    let systemPrompt = buildRagentSystemPrompt(customAgents);
     if (activeAgent === "content") {
       systemPrompt = `You are the AI Content Detector agent. You help users detect whether text is AI-generated. When a user pastes text (100+ chars), the system automatically runs 4 analysis tools and shows results. You can also answer questions about AI detection, content quality, and writing tips. If the user pastes short text, tell them to paste at least 100 characters for accurate detection.${formatRules}${sharedSwitchInfo}`;
     } else if (activeAgent === "social") {
@@ -839,19 +1145,22 @@ ${allAgentInfo}
       systemPrompt = `You are a Design Agent optimized for ${toolLabel}. When the user describes an image, the system automatically runs 5 analysis tools (style, color, lighting, composition, final prompt). You can also answer questions about prompt engineering and ${toolLabel} tips. If no AI tool is selected, ask them to pick one first.${formatRules}${sharedSwitchInfo}`;
     } else if (activeAgent === "music") {
       const genreLabel = selectedGenre ? genres[selectedGenre].label : "any genre";
-      const instLabels = selectedInstruments.map((i) => instruments[i].label).join(", ") || "any instruments";
-      systemPrompt = `You are a Music Agent specialized in generating song lyrics and music generation prompts for tools like Suno AI, Udio, etc.${sharedSwitchInfo}
+      const instLabels = selectedInstruments.map((i) => instruments[i].label).join(", ") || "any";
+      systemPrompt = `You are a Music Agent — a professional songwriter, beatmaker, and AI music tool expert.${sharedSwitchInfo}
 
-The user selected:
-- Genre: ${genreLabel}
-- Instruments: ${instLabels}
+User's setup: Genre: ${genreLabel} | Instruments: ${instLabels}
 
-Generate the following:
-1. **Suno Prompt** (20-30 words): A concise music style/genre description optimized for Suno AI. Include genre, mood, instruments, tempo, and vocal style.
-2. **Lyrics**: Write creative, catchy song lyrics (1-2 verses + chorus) that fit the genre and mood.
-3. **Genre Guide**: Brief tips on what makes this genre work well.
+You can help with:
+- Writing or improving song lyrics (any genre, structure, style)
+- Describing beats and instrumental arrangements
+- Generating prompts for Suno AI, Udio, ElevenLabs, Boomy, AIVA
+- Explaining music theory, chord progressions, scales, BPM
+- Genre guides and production tips
 
-Format it cleanly with headers. Be creative and musical.${formatRules}`;
+When generating lyrics, use proper song structure: [Verse], [Pre-Chorus], [Chorus], [Bridge], [Outro].
+When giving Suno prompts: comma-separated tags with genre, mood, instruments, tempo, vocal style.
+When giving Udio prompts: natural descriptive language.
+Be creative, musical, and professional.${formatRules}`;
     } else if (activeAgent === "cooking") {
       const cuisineLabel = selectedCuisine ? cuisines[selectedCuisine].label : "any cuisine";
       const ingLabels = selectedCookIngredients.map((i) => cookIngredients[i].label).join(", ") || "any ingredients";
@@ -888,8 +1197,23 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
 
       if (switchMatch) {
         const targetKey = switchMatch[1];
+        const needsSetup = ["social", "design", "music", "cooking"].includes(targetKey);
+        const agentLabel = agents[targetKey as BuiltInAgent]?.label
+          || customAgents.find(ca => ca.id === targetKey)?.name
+          || targetKey;
         const cleanReply = normalizeReply(cleanedReply.replace(/\[SWITCH:\w+\]/g, "").trim());
-        setMessages((prev) => [...prev, { id: Date.now() + 1, text: cleanReply || "Would you like me to switch you to that agent?", sender: "bot", switchSuggestion: targetKey }]);
+
+        if (needsSetup) {
+          // Switch only — user must complete setup wizard before forwarding the message
+          const handoffNote = `\n\n*Switching you to **${agentLabel}** — complete the quick setup to get started!*`;
+          setMessages(prev => [...prev, { id: Date.now() + 1, text: cleanReply + handoffNote, sender: "bot" }]);
+          switchAgent(targetKey);
+        } else {
+          // Auto-delegate: switch + forward original message automatically
+          setMessages(prev => [...prev, { id: Date.now() + 1, text: cleanReply, sender: "bot" }]);
+          pendingDelegation.current = { targetKey, originalMessage: originalInput };
+          switchAgent(targetKey);
+        }
       } else {
         setMessages((prev) => [...prev, { id: Date.now() + 1, text: cleanedReply, sender: "bot" }]);
       }
@@ -910,6 +1234,7 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
     setSelectedGenre(null);
     setSelectedInstruments([]);
     setMusicStep("genre");
+    setMusicBuilder(null);
     setSelectedCuisine(null);
     setSelectedCookIngredients([]);
     setCookingStep("cuisine");
@@ -921,11 +1246,11 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
     }
 
     const welcomes: Record<BuiltInAgent, string> = {
-      default: "Hey! 👋 I'm Ragent, your guide to the Ragents platform by Abdul Rauf Jatoi. I know all the agents here — tell me what you need and I'll point you to the right one, or just chat with me!",
+      default: "## Hey, I'm Ragent 👋\n\nI'm your AI orchestrator on the **Ragents** platform — built by Abdul Rauf Jatoi.\n\n**I can help you with:**\n- General questions, writing, brainstorming, explanations\n- Routing you to the right specialist agent automatically\n\n**My agents:**\n- 🔍 **AI Content Detector** — detect & humanize AI-written text\n- 🚀 **Social Agent** — create platform-optimized social posts\n- 🎨 **Design Agent** — AI image prompts (Midjourney, DALL·E, etc.)\n- 🎵 **Music Agent** — lyrics + Suno AI music prompts\n- 🍳 **Cooking Agent** — dish suggestions & step-by-step recipes\n\nJust tell me what you need — I'll handle it or pass you to the right agent automatically.",
       content: "🔍 AI Content Detector ready! Paste text (100+ chars) or upload a file — I'll run 4 analysis tools to detect AI-generated content.",
       social: "Social Media Agent ready! 🚀 Pick a platform below to get started:",
       design: "Design Agent ready! 🎨 First, pick the AI image tool you want to generate a prompt for:",
-      music: "Music Agent ready! 🎵 First, pick a genre for your track:",
+      music: "Music Agent ready! 🎵 I can write lyrics, remix tracks, build beats, and generate Suno/Udio prompts. First, pick a genre:",
       cooking: "Cooking Agent ready! 🍳 First, pick a cuisine style:",
     };
     const msgs: Message[] = [{ id: Date.now(), text: welcomes[agent as BuiltInAgent] || "Hello!", sender: "bot" }];
@@ -948,7 +1273,7 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
     if (activeAgent === "content") return "Paste text to check for AI, or ask anything...";
     if (activeAgent === "social") return selectedPlatform ? `What do you want to post on ${platforms[selectedPlatform].label}?` : "Pick a platform above first...";
     if (activeAgent === "design") return selectedAiTool ? "Describe the image you want to create..." : "Pick an AI tool above first...";
-    if (activeAgent === "music") return musicStep === "ready" ? "Describe your song theme or mood..." : "Pick genre & instruments above first...";
+    if (activeAgent === "music") return musicStep === "ready" ? "Describe your song theme, story, or vibe…" : "Pick genre & instruments above first...";
     if (activeAgent === "cooking") return cookingStep === "ready" ? "What dish are you in the mood for?" : "Pick cuisine & ingredients above first...";
     return "Type a message...";
   };
@@ -1156,14 +1481,19 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
                       <SocialPostBuilder
                         platform={selectedPlatform}
                         topic={socialPost.topic}
+                        style={socialPost.style}
                         hookText={socialPost.hook}
                         descriptionText={socialPost.description}
-                        finalText={socialPost.final}
+                        hashtagsText={socialPost.hashtags}
                         ctaText={socialPost.cta}
-                        stage={socialPost.stage}
+                        stage={socialPost.stage as any}
+                        link={socialPost.link}
+                        onStylePick={handleSocialStylePick}
                         onLengthPick={handleSocialLengthPick}
-                        onAddCta={() => handleSocialCta(true)}
+                        onTagPick={handleSocialTagPick}
+                        onAddCta={(ctaType) => handleSocialCta(true, ctaType)}
                         onSkipCta={() => handleSocialCta(false)}
+                        onLinkChange={handleSocialLinkChange}
                       />
                     </div>
                   )}
@@ -1177,12 +1507,16 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
                       <DesignPromptBuilder
                         tool={selectedAiTool}
                         idea={designPrompt.idea}
-                        styleText={designPrompt.style}
-                        colorText={designPrompt.color}
-                        lightingText={designPrompt.lighting}
-                        composeText={designPrompt.compose}
+                        styleChoice={designPrompt.styleChoice}
+                        sizeChoice={designPrompt.sizeChoice}
+                        colorTheme={designPrompt.colorTheme}
+                        subjectText={designPrompt.subjectText}
+                        detailText={designPrompt.detailText}
                         finalPrompt={designPrompt.finalPrompt}
-                        stage={designPrompt.stage}
+                        stage={designPrompt.stage as any}
+                        onStylePick={handleDesignStylePick}
+                        onSizePick={handleDesignSizePick}
+                        onColorPick={handleDesignColorPick}
                       />
                     </div>
                   )}
@@ -1207,6 +1541,25 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
                         onGenreSelect={handleGenreSelect}
                         onInstrumentToggle={handleInstrumentToggle}
                         onConfirmInstruments={handleConfirmInstruments}
+                      />
+                    </div>
+                  )}
+                  {msg.showMusicBuilder && musicBuilder && selectedGenre && (
+                    <div className="mt-3">
+                      <MusicBuilder
+                        genre={selectedGenre}
+                        selectedInstruments={selectedInstruments}
+                        topic={musicBuilder.topic}
+                        mood={musicBuilder.mood}
+                        tempo={musicBuilder.tempo}
+                        mode={musicBuilder.mode}
+                        lyricsText={musicBuilder.lyricsText}
+                        sunoPrompt={musicBuilder.sunoPrompt}
+                        udioPrompt={musicBuilder.udioPrompt}
+                        stage={musicBuilder.stage as any}
+                        onMoodPick={handleMusicMoodPick}
+                        onTempoPick={handleMusicTempoPick}
+                        onModePick={handleMusicModePick}
                       />
                     </div>
                   )}
@@ -1327,7 +1680,7 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
             style={{ color: "#f5f2f1" }}
           />
           <button
-            onClick={handleSend}
+            onClick={() => handleSend()}
             disabled={isLoading}
             className="p-2 rounded-full transition-all duration-300 hover:scale-105 disabled:opacity-50"
             style={{ backgroundColor: `${theme.accentRgba}0.3)`, color: theme.accent }}
