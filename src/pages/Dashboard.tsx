@@ -7,7 +7,8 @@ import AiDetectionResult from "@/components/AiDetectionResult";
 import ContentUpload from "@/components/ContentUpload";
 import PlatformSelector, { platforms, type Platform } from "@/components/PlatformSelector";
 import MusicSelector, { genres, instruments, type MusicGenre, type Instrument } from "@/components/MusicSelector";
-import CookingSelector, { cuisines, ingredients as cookIngredients, type Cuisine, type Ingredient as CookIngredient } from "@/components/CookingSelector";
+import CookingSelector, { countries, countryDishes, ingredients as cookIngredients, type Country, type Ingredient as CookIngredient } from "@/components/CookingSelector";
+import RecipeCard, { type RecipeStage } from "@/components/RecipeCard";
 import AgentBuilder, { type CustomAgentConfig, getIconByKey, getCustomTheme, getCustomDropdownBg } from "@/components/AgentBuilder";
 import SocialPostBuilder from "@/components/SocialPostBuilder";
 import { DesignToolSelector, DesignPromptBuilder, aiTools, type AiTool, type DesignStage } from "@/components/DesignPromptBuilder";
@@ -36,8 +37,10 @@ interface Message {
   showGenreSelector?: boolean;
   showInstrumentSelector?: boolean;
   showMusicBuilder?: boolean;
-  showCuisineSelector?: boolean;
+  showCountrySelector?: boolean;
+  showDishSelector?: boolean;
   showCookIngredientSelector?: boolean;
+  showRecipeCard?: boolean;
   showSocialBuilder?: boolean;
   showDesignToolSelector?: boolean;
   showDesignBuilder?: boolean;
@@ -65,6 +68,21 @@ interface MusicBuilderState {
   sunoPrompt: string;
   udioPrompt: string;
   stage: MusicStage;
+}
+
+interface RecipeState {
+  country: Country;
+  dish: string;
+  dishEmoji: string;
+  description: string;
+  cookTime: string;
+  prepTime: string;
+  difficulty: string;
+  servings: string;
+  ingredientsList: string[];
+  steps: string[];
+  tips: string;
+  stage: RecipeStage;
 }
 
 interface SocialPostState {
@@ -435,6 +453,31 @@ const getPlatformContext = (platform: Platform): string => {
   return contexts[platform];
 };
 
+const parseMeta = (text: string) => {
+  const get = (key: string) => {
+    const m = text.match(new RegExp(`${key}:\\s*(.+)`, "i"));
+    return m ? m[1].trim() : "";
+  };
+  const ingSection = text.match(/INGREDIENTS:\s*([\s\S]*?)(?:TIPS:|$)/i);
+  const ingredientsList = ingSection
+    ? ingSection[1].split("\n").map(l => l.replace(/^[-•*]\s*/, "").trim()).filter(Boolean)
+    : [];
+  return {
+    description: get("DESCRIPTION"),
+    cookTime: get("COOK_TIME"),
+    prepTime: get("PREP_TIME"),
+    difficulty: get("DIFFICULTY") || "Medium",
+    servings: get("SERVINGS") || "4",
+    ingredientsList,
+    tips: get("TIPS"),
+  };
+};
+
+const parseSteps = (text: string): string[] =>
+  text.split("\n")
+    .map(l => l.replace(/^\d+[.)]\s*/, "").trim())
+    .filter(l => l.length > 10);
+
 const getDesignPlatformContext = (tool: AiTool): string => {
   const contexts: Record<AiTool, string> = {
     midjourney: "End the prompt with: --ar {ratio} --v 6.1 --style raw. Use :: for emphasis weights. No full sentences — comma-separated descriptive phrases.",
@@ -469,12 +512,23 @@ const Dashboard = () => {
   const [selectedInstruments, setSelectedInstruments] = useState<Instrument[]>([]);
   const [musicStep, setMusicStep] = useState<"genre" | "instruments" | "ready">("genre");
   const [musicBuilder, setMusicBuilder] = useState<MusicBuilderState | null>(null);
-  const [selectedCuisine, setSelectedCuisine] = useState<Cuisine | null>(null);
+  const [selectedCountry, setSelectedCountry] = useState<Country | null>(null);
+  const [selectedDish, setSelectedDish] = useState<string | null>(null);
+  const [selectedDishEmoji, setSelectedDishEmoji] = useState<string>("🍽️");
   const [selectedCookIngredients, setSelectedCookIngredients] = useState<CookIngredient[]>([]);
-  const [cookingStep, setCookingStep] = useState<"cuisine" | "ingredients" | "ready">("cuisine");
+  const [cookingStep, setCookingStep] = useState<"country" | "dish" | "ingredients" | "ready">("country");
+  const [recipeState, setRecipeState] = useState<RecipeState | null>(null);
   const [customAgents, setCustomAgents] = useState<CustomAgentConfig[]>(() => {
-    const saved = localStorage.getItem("ragents_custom_agents");
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem("ragents_custom_agents");
+      if (!saved) return [];
+      const parsed = JSON.parse(saved);
+      return parsed.map((a: CustomAgentConfig) => ({
+        memorySize: 10,
+        creationMode: "prompt" as const,
+        ...a,
+      }));
+    } catch { return []; }
   });
   const [showBuilder, setShowBuilder] = useState(false);
   const [socialPost, setSocialPost] = useState<SocialPostState | null>(null);
@@ -870,13 +924,24 @@ Output ONLY the raw humanized text. NO markdown, NO formatting, NO preamble.`;
     }
   };
 
-  const handleCuisineSelect = (c: Cuisine) => {
-    setSelectedCuisine(c);
+  const handleCountrySelect = (c: Country) => {
+    setSelectedCountry(c);
+    setCookingStep("dish");
+    setMessages((prev) => [
+      ...prev,
+      { id: Date.now(), text: `${countries[c].flag} ${countries[c].label}`, sender: "user" },
+      { id: Date.now() + 1, text: `Great! Pick a dish from ${countries[c].label} cuisine:`, sender: "bot", showDishSelector: true },
+    ]);
+  };
+
+  const handleDishSelect = (dish: string, emoji: string) => {
+    setSelectedDish(dish);
+    setSelectedDishEmoji(emoji);
     setCookingStep("ingredients");
     setMessages((prev) => [
       ...prev,
-      { id: Date.now(), text: `${cuisines[c].icon} ${cuisines[c].label}`, sender: "user" },
-      { id: Date.now() + 1, text: `Great choice! Now pick the ingredients you'd like to cook with:`, sender: "bot", showCookIngredientSelector: true },
+      { id: Date.now(), text: `${emoji} ${dish}`, sender: "user" },
+      { id: Date.now() + 1, text: `Nice choice! Pick ingredients you have (or skip to use defaults):`, sender: "bot", showCookIngredientSelector: true },
     ]);
   };
 
@@ -886,14 +951,70 @@ Output ONLY the raw humanized text. NO markdown, NO formatting, NO preamble.`;
     );
   };
 
+  const startRecipeGeneration = async (ingLabels: string) => {
+    if (!selectedCountry || !selectedDish) return;
+    const countryLabel = countries[selectedCountry].label;
+    const raw = "Output ONLY the raw text. No markdown. No extra explanations.";
+
+    const initial: RecipeState = {
+      country: selectedCountry, dish: selectedDish, dishEmoji: selectedDishEmoji,
+      description: "", cookTime: "", prepTime: "", difficulty: "", servings: "",
+      ingredientsList: [], steps: [], tips: "", stage: "recipe_gen",
+    };
+    setRecipeState(initial);
+    setMessages((prev) => [...prev, {
+      id: Date.now(), text: `Generating your ${selectedDish} recipe…`, sender: "bot", showRecipeCard: true,
+    }]);
+    setIsLoading(true);
+
+    try {
+      // Stage 1: recipe metadata
+      const metaReply = await callAI([{
+        role: "system",
+        content: `You are a professional chef. Generate recipe metadata for "${selectedDish}" (${countryLabel} cuisine).${ingLabels ? ` User has: ${ingLabels}.` : ""}
+Output EXACTLY in this format (one value per line, no extra text):
+DESCRIPTION: [one sentence description]
+COOK_TIME: [e.g. 45 mins]
+PREP_TIME: [e.g. 20 mins]
+DIFFICULTY: [Easy / Medium / Hard]
+SERVINGS: [number]
+INGREDIENTS:
+[list each ingredient with quantity, one per line, no bullets]
+TIPS: [one expert chef tip]`,
+      }, { role: "user", content: selectedDish }], apiSettings);
+
+      const meta = parseMeta(metaReply);
+      setRecipeState((prev) => prev ? { ...prev, ...meta, stage: "steps_gen" } : prev);
+
+      // Stage 2: step-by-step instructions
+      const stepsReply = await callAI([{
+        role: "system",
+        content: `You are a professional chef. Write clear step-by-step cooking instructions for "${selectedDish}" (${countryLabel} cuisine). ${raw}
+Write exactly 6-8 numbered steps. Each step on its own line starting with the number and a period. No extra text before or after.`,
+      }, { role: "user", content: `Ingredients available: ${meta.ingredientsList.join(", ")}` }], apiSettings);
+
+      const steps = parseSteps(stepsReply);
+      setRecipeState((prev) => prev ? { ...prev, steps, stage: "done" } : prev);
+    } catch (err: any) {
+      toast.error("Recipe generation failed: " + (err.message || "Unknown error"));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleConfirmCookIngredients = () => {
     setCookingStep("ready");
     const ingLabels = selectedCookIngredients.map((i) => `${cookIngredients[i].icon} ${cookIngredients[i].label}`).join(", ");
     setMessages((prev) => [
       ...prev,
       { id: Date.now(), text: `Ingredients: ${ingLabels}`, sender: "user" },
-      { id: Date.now() + 1, text: `Perfect! 🍳 Now tell me what kind of dish you're in the mood for and I'll suggest recipes!`, sender: "bot" },
     ]);
+    startRecipeGeneration(ingLabels);
+  };
+
+  const handleSkipIngredients = () => {
+    setCookingStep("ready");
+    startRecipeGeneration("");
   };
 
   const handleSocialGenerate = (topic: string) => {
@@ -1162,21 +1283,19 @@ When giving Suno prompts: comma-separated tags with genre, mood, instruments, te
 When giving Udio prompts: natural descriptive language.
 Be creative, musical, and professional.${formatRules}`;
     } else if (activeAgent === "cooking") {
-      const cuisineLabel = selectedCuisine ? cuisines[selectedCuisine].label : "any cuisine";
-      const ingLabels = selectedCookIngredients.map((i) => cookIngredients[i].label).join(", ") || "any ingredients";
-      systemPrompt = `You are a Cooking Agent specialized in suggesting dishes and recipes.${sharedSwitchInfo}
+      const countryLabel = selectedCountry ? countries[selectedCountry].label : "any";
+      const ingLabels = selectedCookIngredients.map((i) => cookIngredients[i].label).join(", ") || "any";
+      systemPrompt = `You are a Cooking Agent — a professional chef and culinary expert.${sharedSwitchInfo}
 
-The user selected:
-- Cuisine: ${cuisineLabel}
-- Instruments: ${ingLabels}
+User's setup: Country: ${countryLabel} | Dish: ${selectedDish || "not selected"} | Ingredients: ${ingLabels}
 
-Based on the user's request, suggest 2-3 dishes that match their cuisine and ingredients. For each dish provide:
-1. **Dish Name** with an emoji
-2. **Brief Description** (1-2 sentences)
-3. **Key Steps** (3-5 quick steps)
-4. **Pro Tip** for making it amazing
+You help with:
+- Generating detailed, visual recipe cards (the system handles this automatically)
+- Answering cooking questions, substitutions, techniques
+- Suggesting dishes and cuisine variations
+- Explaining cooking methods, tips, nutrition
 
-Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
+Be warm, enthusiastic, and helpfully specific. Format cleanly.${formatRules}`;
     } else if (isCustomAgent && customAgent) {
       const toolsDesc = customAgent.tools.length > 0
         ? `\n\nYou have these capabilities: ${customAgent.tools.join(", ")}. Leverage them when relevant.`
@@ -1187,7 +1306,7 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
     try {
       const reply = await callAI([
         { role: "system", content: systemPrompt },
-        ...newMessages.slice(-10).map((m) => ({ role: m.sender === "user" ? "user" : "assistant", content: m.text })),
+        ...newMessages.slice(-(isCustomAgent && customAgent ? customAgent.memorySize ?? 10 : 10)).map((m) => ({ role: m.sender === "user" ? "user" : "assistant", content: m.text })),
       ], apiSettings);
 
 
@@ -1235,9 +1354,12 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
     setSelectedInstruments([]);
     setMusicStep("genre");
     setMusicBuilder(null);
-    setSelectedCuisine(null);
+    setSelectedCountry(null);
+    setSelectedDish(null);
+    setSelectedDishEmoji("🍽️");
     setSelectedCookIngredients([]);
-    setCookingStep("cuisine");
+    setCookingStep("country");
+    setRecipeState(null);
 
     const custom = customAgents.find((a) => a.id === agent);
     if (custom) {
@@ -1251,13 +1373,13 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
       social: "Social Media Agent ready! 🚀 Pick a platform below to get started:",
       design: "Design Agent ready! 🎨 First, pick the AI image tool you want to generate a prompt for:",
       music: "Music Agent ready! 🎵 I can write lyrics, remix tracks, build beats, and generate Suno/Udio prompts. First, pick a genre:",
-      cooking: "Cooking Agent ready! 🍳 First, pick a cuisine style:",
+      cooking: "Cooking Agent ready! 🍳 Pick a country to explore its cuisine:",
     };
     const msgs: Message[] = [{ id: Date.now(), text: welcomes[agent as BuiltInAgent] || "Hello!", sender: "bot" }];
     if (agent === "social") msgs[0].showPlatformSelector = true;
     if (agent === "design") msgs[0].showDesignToolSelector = true;
     if (agent === "music") msgs[0].showGenreSelector = true;
-    if (agent === "cooking") msgs[0].showCuisineSelector = true;
+    if (agent === "cooking") msgs[0].showCountrySelector = true;
     setMessages(msgs);
   };
 
@@ -1274,7 +1396,7 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
     if (activeAgent === "social") return selectedPlatform ? `What do you want to post on ${platforms[selectedPlatform].label}?` : "Pick a platform above first...";
     if (activeAgent === "design") return selectedAiTool ? "Describe the image you want to create..." : "Pick an AI tool above first...";
     if (activeAgent === "music") return musicStep === "ready" ? "Describe your song theme, story, or vibe…" : "Pick genre & instruments above first...";
-    if (activeAgent === "cooking") return cookingStep === "ready" ? "What dish are you in the mood for?" : "Pick cuisine & ingredients above first...";
+    if (activeAgent === "cooking") return cookingStep === "ready" ? "Ask me anything about cooking or techniques…" : "Select a country and dish above first...";
     return "Type a message...";
   };
 
@@ -1563,15 +1685,33 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
                       />
                     </div>
                   )}
-                  {msg.showCuisineSelector && (
+                  {msg.showCountrySelector && (
                     <div className="mt-3">
                       <CookingSelector
-                        step="cuisine"
-                        selectedCuisine={selectedCuisine}
+                        step="country"
+                        selectedCountry={selectedCountry}
+                        selectedDish={selectedDish}
                         selectedIngredients={selectedCookIngredients}
-                        onCuisineSelect={handleCuisineSelect}
+                        onCountrySelect={handleCountrySelect}
+                        onDishSelect={handleDishSelect}
                         onIngredientToggle={handleCookIngredientToggle}
                         onConfirmIngredients={handleConfirmCookIngredients}
+                        onSkipIngredients={handleSkipIngredients}
+                      />
+                    </div>
+                  )}
+                  {msg.showDishSelector && selectedCountry && (
+                    <div className="mt-3">
+                      <CookingSelector
+                        step="dish"
+                        selectedCountry={selectedCountry}
+                        selectedDish={selectedDish}
+                        selectedIngredients={selectedCookIngredients}
+                        onCountrySelect={handleCountrySelect}
+                        onDishSelect={handleDishSelect}
+                        onIngredientToggle={handleCookIngredientToggle}
+                        onConfirmIngredients={handleConfirmCookIngredients}
+                        onSkipIngredients={handleSkipIngredients}
                       />
                     </div>
                   )}
@@ -1579,11 +1719,32 @@ Be warm, enthusiastic, and helpful. Format cleanly with headers.${formatRules}`;
                     <div className="mt-3">
                       <CookingSelector
                         step="ingredients"
-                        selectedCuisine={selectedCuisine}
+                        selectedCountry={selectedCountry}
+                        selectedDish={selectedDish}
                         selectedIngredients={selectedCookIngredients}
-                        onCuisineSelect={handleCuisineSelect}
+                        onCountrySelect={handleCountrySelect}
+                        onDishSelect={handleDishSelect}
                         onIngredientToggle={handleCookIngredientToggle}
                         onConfirmIngredients={handleConfirmCookIngredients}
+                        onSkipIngredients={handleSkipIngredients}
+                      />
+                    </div>
+                  )}
+                  {msg.showRecipeCard && recipeState && selectedCountry && (
+                    <div className="mt-3">
+                      <RecipeCard
+                        country={recipeState.country}
+                        dish={recipeState.dish}
+                        dishEmoji={recipeState.dishEmoji}
+                        description={recipeState.description}
+                        cookTime={recipeState.cookTime}
+                        prepTime={recipeState.prepTime}
+                        difficulty={recipeState.difficulty}
+                        servings={recipeState.servings}
+                        ingredientsList={recipeState.ingredientsList}
+                        steps={recipeState.steps}
+                        tips={recipeState.tips}
+                        stage={recipeState.stage}
                       />
                     </div>
                   )}
